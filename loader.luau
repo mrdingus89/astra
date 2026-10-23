@@ -1,1087 +1,836 @@
+local Players = game:GetService('Players')
+local UIS = game:GetService('UserInputService')
+local TweenService = game:GetService('TweenService')
+local RunService = game:GetService('RunService')
+local HttpService = game:GetService('HttpService')
+local TextService = game:GetService('TextService')
+local CoreGui = game:GetService('CoreGui')
 
-
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UIS = game:GetService("UserInputService")
-local TextService = game:GetService("TextService")
-local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
-local Camera = workspace.CurrentCamera
-
-local ROOT_NAME = "AetherMobileWorkspace"
-local SAVE_PATH = "aether_workspace_v2.json"
-local MAX_TABS = 12
-local DEFAULT_CODE = '-- Welcome to Aether\nprint("Hello from Aether!")'
+local function C(r,g,b) return Color3.fromRGB(r,g,b) end
 local P = {
-    backdrop = Color3.fromRGB(8, 11, 16),
-    base = Color3.fromRGB(14, 18, 25),
-    rail = Color3.fromRGB(11, 14, 20),
-    pane = Color3.fromRGB(18, 23, 31),
-    raised = Color3.fromRGB(25, 32, 43),
-    raisedHover = Color3.fromRGB(33, 42, 54),
-    border = Color3.fromRGB(42, 50, 63),
-    text = Color3.fromRGB(236, 243, 249),
-    muted = Color3.fromRGB(135, 151, 165),
-    faint = Color3.fromRGB(95, 109, 124),
-    error = Color3.fromRGB(255, 119, 134),
-    warn = Color3.fromRGB(252, 197, 104),
-    green = Color3.fromRGB(103, 224, 177),
+    panel = C(38,38,38),       -- original Basalt proto_318 RGB
+    code = C(29,29,29),
+    selected = C(54,54,54),
+    accent = C(245,245,245),
+    ink = C(20,20,20),
+    text = C(245,245,245),
+    muted = C(153,153,153),
+    edge = C(125,125,125),
+    green = C(125,223,163),
+    red = C(240,126,126),
+    blue = C(126,189,248),
+    orange = C(231,183,130),
 }
-local ACCENTS = {
-    Ice = Color3.fromRGB(103, 210, 237),
-    Mint = Color3.fromRGB(107, 227, 188),
-    Violet = Color3.fromRGB(177, 146, 255),
-}
-local currentTheme = "Ice"
-local accent = ACCENTS[currentTheme]
-local fontSize = 14
-local syntaxEnabled = true
-local animationsEnabled = true
-local tabs, library, logs = {}, {}, {}
-local activeIndex, activePage, nextId = 1, "Editor", 1
-local dirtyVersion, runCount = 0, 0
-local uiClosed = false
-local accentItems, navItems, pageItems = {}, {}, {}
-local toastVersion = 0
-local connections = {}
-local codeBox, syntaxLabel, lineLabel, editorScroll, tabStrip, tabLayout
-local lineInfo, byteInfo, statusInfo, toastLabel, saveModal, modalTitle, modalHint
-local modalField, modalAction, modalCancel
-local resultScroll, resultLayout, libraryScroll, libraryLayout, consoleScroll, consoleLayout
-local librarySearch, searchInput, resultInfo
-local main, mainScale, orb, screen, selectedFileName
-local updateEditor, renderTabs, renderLibrary, addLog, showPage, notify
-local refreshTheme, refreshCodeGeometry
+local E = (type(getgenv) == 'function' and getgenv()) or _G
+if type(E) == 'table' and type(E.basaltImproved) == 'table' then
+    pcall(function() E.basaltImproved.destroy() end)
+end
 
-local function new(class, parent, props)
-    local instance = Instance.new(class)
-    for key, value in pairs(props or {}) do instance[key] = value end
-    if parent then instance.Parent = parent end
-    return instance
+local connections = {}
+local alive = true
+local function connect(signal, callback)
+    local c = signal:Connect(callback)
+    table.insert(connections, c)
+    return c
 end
-local function corner(parent, radius)
-    return new("UICorner", parent, {CornerRadius=UDim.new(0, radius)})
-end
-local function stroke(parent, color, transparency, thickness)
-    return new("UIStroke", parent, {Color=color or P.border,
-        Transparency=transparency or 0, Thickness=thickness or 1})
-end
-local function gradient(parent, first, last, rotation)
-    return new("UIGradient", parent, {Rotation=rotation or 30,
-        Color=ColorSequence.new(first, last)})
-end
-local function animate(obj, to, t)
-    if not obj or not obj.Parent then return end
-    if not animationsEnabled then
-        for key, value in pairs(to) do obj[key] = value end
-        return
+local function node(class, parent, props)
+    local o = Instance.new(class)
+    if props then
+        for k,v in pairs(props) do o[k] = v end
     end
-    local tw = TweenService:Create(obj, TweenInfo.new(t or .16,
-        Enum.EasingStyle.Quart, Enum.EasingDirection.Out), to)
+    o.Parent = parent
+    return o
+end
+local function round(parent, pixels)
+    return node('UICorner', parent, {CornerRadius = UDim.new(0,pixels)})
+end
+local function stroke(parent, color, width, trans)
+    return node('UIStroke', parent, {
+        Color=color or P.edge, Thickness=width or 1,
+        Transparency=trans or 0.8,
+        ApplyStrokeMode=Enum.ApplyStrokeMode.Border
+    })
+end
+local function tween(o, duration, props)
+    local tw = TweenService:Create(o, TweenInfo.new(duration or .16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props)
     tw:Play()
     return tw
 end
-local function label(parent, text, size, color, bold, props)
-    local p = props or {}
-    p.BackgroundTransparency = 1
-    p.BorderSizePixel = 0
-    p.Text = text
-    p.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-    p.TextSize = size or 13
-    p.TextColor3 = color or P.text
-    p.TextXAlignment = p.TextXAlignment or Enum.TextXAlignment.Left
-    p.TextYAlignment = p.TextYAlignment or Enum.TextYAlignment.Center
-    return new("TextLabel", parent, p)
+local function frame(parent, name, pos, size, color, rad, transparency)
+    local f = node('Frame', parent, {
+        Name=name, BorderSizePixel=0, Position=pos, Size=size,
+        BackgroundColor3=color or P.panel,
+        BackgroundTransparency=transparency or 0,
+    })
+    if rad then round(f,rad) end
+    return f
 end
-local function button(parent, text, props, kind)
-    local p = props or {}
-    p.Text = text
-    p.AutoButtonColor = false
-    p.BorderSizePixel = 0
-    p.BackgroundColor3 = kind == "accent" and accent or P.raised
-    p.TextColor3 = kind == "accent" and P.backdrop or P.text
-    p.Font = Enum.Font.GothamBold
-    p.TextSize = p.TextSize or 12
-    local b = new("TextButton", parent, p)
-    corner(b, p.CornerRadius or 9)
-    if kind == "accent" then
-        table.insert(accentItems, {obj=b, prop="BackgroundColor3"})
-    end
-    b.MouseEnter:Connect(function()
-        if b.Parent then animate(b, {BackgroundColor3=kind == "accent" and accent:Lerp(Color3.new(1,1,1), .14) or P.raisedHover}, .12) end
+local function text(parent,name,str,pos,size,sz,col,font,align)
+    return node('TextLabel',parent,{
+        Name=name, BackgroundTransparency=1, BorderSizePixel=0,
+        Text=str or '', Position=pos, Size=size,
+        TextColor3=col or P.text, TextSize=sz or 13,
+        Font=font or Enum.Font.Gotham,
+        TextXAlignment=align or Enum.TextXAlignment.Left,
+        TextYAlignment=Enum.TextYAlignment.Center,
+        TextTruncate=Enum.TextTruncate.AtEnd,
+    })
+end
+local function btn(parent,name,str,pos,size,color,rad)
+    local b=node('TextButton',parent,{
+        Name=name, Text=str or '', Position=pos, Size=size,
+        AutoButtonColor=false, BackgroundColor3=color or P.selected,
+        BorderSizePixel=0, TextColor3=P.text, TextSize=12,
+        Font=Enum.Font.GothamMedium, TextTruncate=Enum.TextTruncate.AtEnd,
+    })
+    if rad then round(b,rad) end
+    local prePressTransparency = 0
+    connect(b.MouseButton1Down,function()
+        prePressTransparency = b.BackgroundTransparency
+        tween(b,.11,{BackgroundTransparency=math.min(1,prePressTransparency+.16)})
     end)
-    b.MouseLeave:Connect(function()
-        if b.Parent then animate(b, {BackgroundColor3=kind == "accent" and accent or P.raised}, .13) end
+    connect(b.MouseButton1Up,function()
+        tween(b,.14,{BackgroundTransparency=prePressTransparency})
     end)
     return b
 end
-local function pane(parent, props, r)
-    local p = props or {}
-    p.BorderSizePixel = 0
-    p.BackgroundColor3 = p.BackgroundColor3 or P.pane
-    local object = new("Frame", parent, p)
-    corner(object, r or 11)
-    stroke(object, P.border, .20)
-    return object
+local function bar(parent,x1,y1,x2,y2,color,thickness)
+    local dx,dy=x2-x1,y2-y1
+    local length=math.sqrt(dx*dx+dy*dy)
+    local f=frame(parent,'Segment',UDim2.fromOffset((x1+x2)/2,(y1+y2)/2),
+        UDim2.fromOffset(length,thickness or 1.8),color,thickness or 1.8)
+    f.AnchorPoint=Vector2.new(.5,.5)
+    f.Rotation=math.deg(math.atan2(dy,dx))
+    return f
 end
-local function track(con)
-    table.insert(connections, con)
-    return con
+-- Basalt renders monochrome line icons. These are native Frame strokes,
+-- not emoji or network images, so they render consistently on mobile.
+local function icon(parent,which,at,size,color)
+    local holder=node('Frame',parent,{Name='Icon',Position=at,Size=UDim2.fromOffset(size,size),BackgroundTransparency=1})
+    local s=size/24
+    local function line(a,b,c,d,w) return bar(holder,a*s,b*s,c*s,d*s,color,(w or 2)*s) end
+    local function rect(x,y,w,h,r)
+        local f=frame(holder,'Glyph',UDim2.fromOffset(x*s,y*s),UDim2.fromOffset(w*s,h*s),color,r and r*s or nil)
+        return f
+    end
+    if which=='home' then
+        line(4,11,12,5);line(12,5,20,11);line(6,10,6,20);line(18,10,18,20);line(6,20,18,20);line(10,20,10,14);line(14,14,14,20)
+    elseif which=='terminal' then
+        line(5,7,10,12);line(10,12,5,17);line(12,18,19,18)
+    elseif which=='cloud' then
+        line(5,17,18,17);line(5,17,3,14);line(3,14,5,11);line(5,11,8,11);line(8,11,10,7);line(10,7,15,6);line(15,6,19,9);line(19,9,19,11);line(19,11,22,14);line(22,14,18,17)
+    elseif which=='sparkles' then
+        line(11,3,11,10);line(8,6,14,6);line(11,10,8,6);line(11,10,14,6);line(17,13,17,21);line(13,17,21,17);line(17,13,13,17);line(17,13,21,17)
+    elseif which=='settings' then
+        local m=rect(5,5,14,14,7);m.BackgroundTransparency=1;stroke(m,color,2*s,0)
+        local n=rect(10,10,4,4,4);n.BackgroundTransparency=1;stroke(n,color,2*s,0)
+        line(12,1,12,4);line(12,20,12,23);line(1,12,4,12);line(20,12,23,12)
+    elseif which=='close' then
+        line(5,5,19,19);line(19,5,5,19)
+    elseif which=='play' then
+        line(7,5,7,19);line(7,5,18,12);line(18,12,7,19)
+    elseif which=='copy' then
+        line(8,4,20,4);line(20,4,20,17);line(20,17,8,17);line(8,17,8,4)
+        line(5,7,4,7);line(4,7,4,21);line(4,21,16,21);line(16,21,16,20)
+    elseif which=='paste' then
+        line(5,7,5,21);line(5,21,19,21);line(19,21,19,7);line(9,4,15,4)
+        line(9,4,9,8);line(15,4,15,8);line(9,8,15,8)
+    elseif which=='trash' then
+        line(5,7,19,7);line(7,8,8,21);line(8,21,16,21);line(16,21,17,8)
+        line(9,4,15,4);line(11,11,11,17);line(14,11,14,17)
+    elseif which=='add' then
+        line(12,4,12,20);line(4,12,20,12)
+    elseif which=='bolt' then
+        line(14,2,6,13);line(6,13,12,13);line(12,13,10,22);line(10,22,19,10);line(19,10,13,10);line(13,10,14,2)
+    elseif which=='search' then
+        local q=rect(4,4,13,13,8);q.BackgroundTransparency=1;stroke(q,color,1.8*s,0);line(16,16,21,21)
+    elseif which=='code' then
+        line(9,7,4,12);line(4,12,9,17);line(15,7,20,12);line(20,12,15,17)
+    elseif which=='check' then
+        line(4,12,10,18);line(10,18,20,6)
+    else
+        local q=rect(8,8,8,8,2);q.BackgroundTransparency=1;stroke(q,color,1.8*s,0)
+    end
+    return holder
 end
-local function safeCall(f, ...)
-    if type(f) ~= "function" then return false, "Unavailable in this executor" end
-    return pcall(f, ...)
+
+local parentGui=CoreGui
+if type(gethui)=='function' then
+    local ok,h=pcall(gethui)
+    if ok and typeof(h)=='Instance' then parentGui=h end
 end
-local function jsonEncode(value)
-    local ok, encoded = pcall(function() return HttpService:JSONEncode(value) end)
-    return ok and encoded or nil
+local Interface=node('ScreenGui',parentGui,{
+    Name='Basalt_Improved',ResetOnSpawn=false,IgnoreGuiInset=true,DisplayOrder=71,
+    ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
+})
+local DimGui=node('ScreenGui',parentGui,{
+    Name='Basalt_Improved_Backdrop',ResetOnSpawn=false,IgnoreGuiInset=true,DisplayOrder=70,
+    ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
+})
+local Root=frame(Interface,'Root',UDim2.new(),UDim2.fromScale(1,1),P.panel,nil,1)
+local dimmer=btn(DimGui,'Backdrop','',UDim2.new(),UDim2.fromScale(1,1),C(0,0,0))
+dimmer.Visible=false;dimmer.BackgroundTransparency=.55
+
+local Panel=frame(Root,'Panel',UDim2.fromOffset(16,16),UDim2.fromOffset(536,310),P.panel,nil,1)
+Panel.Active=true
+local Scale=node('UIScale',Panel,{Scale=1})
+local Shadow=frame(Panel,'Shadow',UDim2.fromOffset(0,5),UDim2.fromOffset(536,310),C(0,0,0),22,.67)
+Shadow.ZIndex=0
+local Glass=frame(Panel,'Glass',UDim2.fromOffset(0,77),UDim2.fromOffset(536,233),P.panel,17,.08)
+Glass.ZIndex=2;Glass.ClipsDescendants=true
+stroke(Glass,C(120,120,120),1,.86)
+local Dock=frame(Panel,'Dock',UDim2.fromOffset(248,0),UDim2.fromOffset(192,40),P.panel,24,.08)
+Dock.ZIndex=10;stroke(Dock,P.edge,1,.88)
+local Selection=frame(Dock,'Selection',UDim2.fromOffset(3,3),UDim2.fromOffset(34,34),P.accent,17)
+Selection.ZIndex=11
+local toggle=btn(Root,'Toggle','',UDim2.new(.5,-24,.17,0),UDim2.fromOffset(48,48),P.panel,24)
+toggle.ZIndex=40;toggle.Visible=false;toggle.BackgroundTransparency=.08
+stroke(toggle,P.edge,1,.64)
+local toggleIcon=icon(toggle,'code',UDim2.fromOffset(12,12),24,P.text);toggleIcon.ZIndex=41
+local close=btn(Panel,'Close','',UDim2.fromOffset(139,0),UDim2.fromOffset(40,40),P.panel,22)
+close.ZIndex=15;close.BackgroundTransparency=.08
+icon(close,'close',UDim2.fromOffset(11,11),18,P.text)
+local logo=text(Panel,'Brand','BASALT',UDim2.fromOffset(13,5),UDim2.fromOffset(118,32),14,P.text,Enum.Font.GothamBold)
+local ver=text(Panel,'Version','/ EDITOR',UDim2.fromOffset(14,33),UDim2.fromOffset(115,16),9,P.muted,Enum.Font.GothamMedium)
+local statusDot=frame(Panel,'Status',UDim2.fromOffset(14,61),UDim2.fromOffset(6,6),P.green,5)
+local statusText=text(Panel,'StatusText','READY',UDim2.fromOffset(26,54),UDim2.fromOffset(85,20),10,P.muted,Enum.Font.GothamMedium)
+local fpsText=text(Panel,'FrameRate','— FPS',UDim2.fromOffset(142,54),UDim2.fromOffset(66,20),11,P.muted,Enum.Font.Code)
+local clockText=text(Panel,'Clock','--:--',UDim2.fromOffset(208,54),UDim2.fromOffset(66,20),11,P.muted,Enum.Font.Code)
+local noteText=text(Panel,'Hint','DRAG TO MOVE',UDim2.fromOffset(377,54),UDim2.fromOffset(147,20),9,P.muted,Enum.Font.GothamMedium,Enum.TextXAlignment.Right)
+logo.Active=true;ver.Active=true;statusText.Active=true;noteText.Active=true
+
+local navNames={'Code','Console','Hub','Agent','Settings'}
+local navIcons={'home','terminal','cloud','sparkles','settings'}
+local navButtons={}
+for i,name in ipairs(navNames) do
+    local b=btn(Dock,name..'Tab','',UDim2.fromOffset(3+(i-1)*38,3),UDim2.fromOffset(34,34),P.accent,17)
+    b.ZIndex=12;b.BackgroundTransparency=1
+    local g=icon(b,navIcons[i],UDim2.fromOffset(5,5),24,i==1 and P.ink or P.text)
+    g.ZIndex=13
+    navButtons[i]={button=b,glyph=g}
 end
-local function jsonDecode(value)
-    local ok, decoded = pcall(function() return HttpService:JSONDecode(value) end)
-    return ok and decoded or nil
+
+local content={}
+local function page(name)
+    local f=frame(Glass,name..'Page',UDim2.new(),UDim2.fromScale(1,1),P.panel,nil,1)
+    f.Visible=false;f.ZIndex=4
+    content[name]=f
+    return f
 end
-local function saveWorkspace()
-    if type(writefile) ~= "function" then return end
-    local data = {schema=2, tabs=tabs, activeIndex=activeIndex,
-        library=library, nextId=nextId, accent=currentTheme,
-        fontSize=fontSize, syntax=syntaxEnabled, animations=animationsEnabled}
-    local encoded = jsonEncode(data)
-    if encoded then pcall(writefile, SAVE_PATH, encoded) end
-end
-local function scheduleSave()
-    dirtyVersion += 1
-    local token = dirtyVersion
-    task.delay(1.0, function()
-        if dirtyVersion == token then saveWorkspace() end
-    end)
-end
-local function loadWorkspace()
-    if type(readfile) ~= "function" then return end
-    local ok, raw = pcall(readfile, SAVE_PATH)
-    if not ok or type(raw) ~= "string" then return end
-    local data = jsonDecode(raw)
-    if type(data) ~= "table" or data.schema ~= 2 then return end
-    if type(data.tabs) == "table" then
-        for _, item in ipairs(data.tabs) do
-            if #tabs >= MAX_TABS then break end
-            if type(item)=="table" and type(item.name)=="string" and type(item.source)=="string" then
-                table.insert(tabs, {id=tonumber(item.id) or (#tabs+1),
-                    name=item.name:sub(1,40), source=item.source:sub(1,200000)})
+local codePage=page('Code')
+local consolePage=page('Console')
+local hubPage=page('Hub')
+local agentPage=page('Agent')
+local settingsPage=page('Settings')
+local current='Code'
+local function setPage(name)
+    current=name
+    for k,p in pairs(content) do p.Visible=(k==name) end
+    for i,entry in ipairs(navButtons) do
+        for _,child in ipairs(entry.glyph:GetChildren()) do
+            local color = (name==navNames[i] and P.ink or P.text)
+            if child:IsA('Frame') and child.Name=='Segment' then
+                tween(child,.13,{BackgroundColor3=color})
+            elseif child:IsA('Frame') and child.Name=='Glyph' then
+                local outline=child:FindFirstChildOfClass('UIStroke')
+                if outline then tween(outline,.13,{Color=color}) end
             end
         end
     end
-    if type(data.library)=="table" then
-        for _, item in ipairs(data.library) do
-            if type(item)=="table" and type(item.name)=="string" and type(item.source)=="string" then
-                table.insert(library, {name=item.name:sub(1,60), source=item.source:sub(1,200000)})
-                if #library >= 100 then break end
-            end
-        end
+    for i,n in ipairs(navNames) do
+        if n==name then tween(Selection,.2,{Position=UDim2.fromOffset(3+(i-1)*38,3)}) break end
     end
-    if ACCENTS[data.accent] then currentTheme=data.accent; accent=ACCENTS[data.accent] end
-    if type(data.fontSize)=="number" then fontSize=math.clamp(data.fontSize,11,19) end
-    if type(data.syntax)=="boolean" then syntaxEnabled=data.syntax end
-    if type(data.animations)=="boolean" then animationsEnabled=data.animations end
-    if type(data.nextId)=="number" then nextId=math.clamp(data.nextId,1,99999) end
-    activeIndex = math.clamp(tonumber(data.activeIndex) or 1, 1, math.max(1,#tabs))
 end
-loadWorkspace()
-if #tabs == 0 then
-    tabs[1] = {id=nextId, name="Untitled 1", source=DEFAULT_CODE}
-    nextId += 1
+for i,item in ipairs(navButtons) do
+    connect(item.button.MouseButton1Click,function()setPage(navNames[i])end)
 end
 
--- Mount directly in CoreGui; use gethui() only as a fallback.
-local existing = CoreGui:FindFirstChild(ROOT_NAME)
-if existing then existing:Destroy() end
-screen = new("ScreenGui", nil, {Name=ROOT_NAME, ResetOnSpawn=false,
-    DisplayOrder=999, IgnoreGuiInset=true, ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
-local attached = pcall(function() screen.Parent = CoreGui end)
-if not attached and type(gethui)=="function" then
-    local ok,container=pcall(gethui)
-    if ok and typeof(container)=="Instance" then
-        local prior=container:FindFirstChild(ROOT_NAME)
-        if prior then prior:Destroy() end
-        attached=pcall(function() screen.Parent=container end)
+-- CODE PAGE. Exact names/geometry from Basalt's EditorCard/Source hierarchy.
+local ScriptTabs=node('ScrollingFrame',codePage,{
+    Name='ScriptTabs',BackgroundTransparency=1,BorderSizePixel=0,
+    Position=UDim2.fromOffset(12,8),Size=UDim2.fromOffset(472,32),
+    CanvasSize=UDim2.fromOffset(0,0),AutomaticCanvasSize=Enum.AutomaticSize.X,
+    ScrollBarThickness=0,ScrollingDirection=Enum.ScrollingDirection.X,
+    ZIndex=5,
+})
+local tabsLayout=node('UIListLayout',ScriptTabs,{
+    FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder,
+})
+local AddTab=btn(codePage,'AddTab','',UDim2.fromOffset(491,13),UDim2.fromOffset(24,24),P.selected,12)
+AddTab.ZIndex=7;icon(AddTab,'add',UDim2.fromOffset(5,5),14,P.text)
+
+local EditorCard=frame(codePage,'EditorCard',UDim2.fromOffset(12,47),UDim2.fromOffset(512,144),P.code,9)
+EditorCard.ZIndex=5;EditorCard.ClipsDescendants=true
+stroke(EditorCard,P.edge,1,.91)
+local EditorScroll=node('ScrollingFrame',EditorCard,{
+    Name='EditorScroll',Position=UDim2.new(),Size=UDim2.fromScale(1,1),
+    BackgroundTransparency=1,BorderSizePixel=0,ScrollingDirection=Enum.ScrollingDirection.XY,
+    CanvasSize=UDim2.fromOffset(0,160),ScrollBarThickness=2,
+    ScrollBarImageColor3=P.muted,ScrollBarImageTransparency=.5,
+    ZIndex=6,
+})
+local LineNumbers=text(EditorScroll,'LineNumbers','1',UDim2.fromOffset(0,3),UDim2.fromOffset(25,160),13,P.muted,Enum.Font.Code,Enum.TextXAlignment.Right)
+LineNumbers.ZIndex=6;LineNumbers.TextYAlignment=Enum.TextYAlignment.Top;LineNumbers.LineHeight=1.13
+local divider=frame(EditorScroll,'GutterRule',UDim2.fromOffset(32,4),UDim2.fromOffset(1,150),P.edge,nil,.76)
+divider.ZIndex=6
+local Highlight=text(EditorScroll,'Highlight','',UDim2.fromOffset(37,3),UDim2.fromOffset(465,160),13,P.text,Enum.Font.Code)
+Highlight.ZIndex=7;Highlight.RichText=true;Highlight.TextWrapped=false
+Highlight.TextYAlignment=Enum.TextYAlignment.Top;Highlight.LineHeight=1.13
+Highlight.TextTruncate=Enum.TextTruncate.None
+local Source=node('TextBox',EditorScroll,{
+    Name='Source',BackgroundTransparency=1,BorderSizePixel=0,
+    Position=UDim2.fromOffset(37,3),Size=UDim2.fromOffset(465,160),
+    Text='',PlaceholderText='',ClearTextOnFocus=false,MultiLine=true,
+    TextWrapped=false,ShowNativeInput=true,
+    TextColor3=P.text,TextTransparency=1,TextSize=13,LineHeight=1.13,
+    Font=Enum.Font.Code,TextXAlignment=Enum.TextXAlignment.Left,
+    TextYAlignment=Enum.TextYAlignment.Top,ZIndex=8,
+})
+local Caret=frame(EditorScroll,'Caret',UDim2.fromOffset(37,3),UDim2.fromOffset(1,15),P.text)
+Caret.Visible=false;Caret.ZIndex=9
+-- When the mobile system keyboard opens, native edit positioning is retained.
+
+local Actions=frame(codePage,'Actions',UDim2.fromOffset(12,197),UDim2.fromOffset(512,29),P.panel,nil,1)
+Actions.ZIndex=6
+local Run=btn(Actions,'Run','',UDim2.fromOffset(0,0),UDim2.fromOffset(105,29),P.accent,14)
+Run.TextColor3=P.ink;Run.ZIndex=7
+icon(Run,'play',UDim2.fromOffset(12,7),15,P.ink)
+text(Run,'Caption','Execute',UDim2.fromOffset(35,0),UDim2.fromOffset(65,29),11,P.ink,Enum.Font.GothamBold)
+local EditActions=frame(Actions,'EditActions',UDim2.fromOffset(114,0),UDim2.fromOffset(398,29),P.selected,14)
+local function smallAction(label,x,w,ico)
+    local b=btn(EditActions,label,'',UDim2.fromOffset(x,1),UDim2.fromOffset(w,27),P.selected,13)
+    icon(b,ico,UDim2.fromOffset(8,6),15,P.text)
+    text(b,'Caption',label,UDim2.fromOffset(29,0),UDim2.new(1,-30,1,0),10,P.text,Enum.Font.GothamMedium)
+    return b
+end
+local Paste=smallAction('Paste',0,76,'paste')
+local ExecClip=smallAction('Run clipboard',78,135,'play')
+local Copy=smallAction('Copy',216,78,'copy')
+local Clear=smallAction('Clear',296,101,'trash')
+
+-- CONSOLE PAGE
+local cHeader=text(consolePage,'Header','CONSOLE',UDim2.fromOffset(15,12),UDim2.fromOffset(190,24),14,P.text,Enum.Font.GothamBold)
+local cSub=text(consolePage,'Sub','Execution activity & errors',UDim2.fromOffset(15,35),UDim2.fromOffset(310,18),11,P.muted)
+local ConsoleCopy=btn(consolePage,'ConsoleCopy','',UDim2.fromOffset(444,9),UDim2.fromOffset(30,30),P.selected,15)
+icon(ConsoleCopy,'copy',UDim2.fromOffset(8,8),14,P.text)
+local ConsoleClear=btn(consolePage,'ConsoleClear','',UDim2.fromOffset(479,9),UDim2.fromOffset(30,30),P.selected,15)
+icon(ConsoleClear,'trash',UDim2.fromOffset(8,8),14,P.text)
+local ConsoleCard=frame(consolePage,'ConsoleCard',UDim2.fromOffset(12,60),UDim2.fromOffset(512,163),P.code,11)
+stroke(ConsoleCard,P.edge,1,.91)
+local ConsoleScroll=node('ScrollingFrame',ConsoleCard,{
+    Name='ConsoleScroll',BackgroundTransparency=1,BorderSizePixel=0,
+    Position=UDim2.fromOffset(10,7),Size=UDim2.new(1,-20,1,-14),
+    ScrollBarThickness=2,ScrollBarImageColor3=P.muted,
+    CanvasSize=UDim2.fromOffset(0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,
+})
+local logLayout=node('UIListLayout',ConsoleScroll,{Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
+local logs={}
+local function log(message,kind)
+    if not alive then return end
+    kind=kind or 'info'
+    local msg=tostring(message)
+    table.insert(logs,string.format('[%s] %s',kind:upper(),msg))
+    if #logs>160 then table.remove(logs,1) end
+    local row=text(ConsoleScroll,'LogLine',msg,UDim2.new(),UDim2.new(1,-10,0,16),12,
+        kind=='error' and P.red or kind=='success' and P.green or kind=='warning' and P.orange or P.text,
+        Enum.Font.Code)
+    row.TextWrapped=true;row.TextTruncate=Enum.TextTruncate.None
+    row.AutomaticSize=Enum.AutomaticSize.Y
+    row.Size=UDim2.new(1,-8,0,16)
+    local pref=text(row,'Prefix',kind=='error' and 'ERR' or kind=='success' and 'OK' or '•',
+        UDim2.fromOffset(0,0),UDim2.fromOffset(26,16),10,P.muted,Enum.Font.GothamBold)
+    row.TextXAlignment=Enum.TextXAlignment.Left
+    row.Text=string.rep(' ',6)..msg
+    task.defer(function()
+        if not alive or not ConsoleScroll.Parent then return end
+        ConsoleScroll.CanvasPosition=Vector2.new(0,math.max(0,logLayout.AbsoluteContentSize.Y-ConsoleScroll.AbsoluteSize.Y))
+    end)
+    if #ConsoleScroll:GetChildren()>175 then
+        for _,child in ipairs(ConsoleScroll:GetChildren()) do
+            if child.Name=='LogLine' then child:Destroy();break end
+        end
     end
 end
-if not attached then error("Aether: unable to mount CoreGui (executor permission needed)") end
-screen.Destroying:Connect(function()
-    for _, connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
+connect(ConsoleCopy.MouseButton1Click,function()
+    if type(setclipboard)=='function' then
+        pcall(setclipboard,table.concat(logs,'\n'));log('Console copied','success')
+    else log('Clipboard unavailable','warning') end
+end)
+connect(ConsoleClear.MouseButton1Click,function()
+    for _,child in ipairs(ConsoleScroll:GetChildren()) do
+        if child.Name=='LogLine' then child:Destroy() end
+    end
+    table.clear(logs);log('Console cleared')
 end)
 
-local backdrop = new("Frame", screen, {Name="Shade",BackgroundColor3=P.backdrop,
-    BackgroundTransparency=.42,BorderSizePixel=0,Size=UDim2.fromScale(1,1),Visible=false})
-main = new("Frame", screen, {Name="AetherWindow",AnchorPoint=Vector2.new(.5,.5),
-    Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(740,480),
-    BackgroundColor3=P.base,BorderSizePixel=0,ClipsDescendants=true})
-corner(main, 17)
-stroke(main, P.border, .02)
-local topAccent = new("Frame",main,{Name="TopAccent",BackgroundColor3=accent,
-    BorderSizePixel=0,Size=UDim2.new(1,0,0,2),ZIndex=5})
-gradient(topAccent,accent,accent:Lerp(P.pane,.85),0)
-table.insert(accentItems,{obj=topAccent,prop="BackgroundColor3"})
-mainScale = new("UIScale", main, {Scale=1})
-local rootGradient = gradient(main, P.base, Color3.fromRGB(16,22,31), 90)
-local rail = new("Frame", main, {Name="SideNavigation",BackgroundColor3=P.rail,
-    BorderSizePixel=0,Size=UDim2.new(0,66,1,0)})
-new("Frame", rail, {BackgroundColor3=P.border,BackgroundTransparency=.35,BorderSizePixel=0,
-    Size=UDim2.new(0,1,1,0),Position=UDim2.new(1,-1,0,0)})
-local brandMark = pane(rail, {Name="Brand",Size=UDim2.fromOffset(38,38),Position=UDim2.fromOffset(14,15),
-    BackgroundColor3=accent}, 11)
-gradient(brandMark, accent, accent:Lerp(Color3.new(0,0,0), .35), 45)
-local mark = label(brandMark, "A", 19, P.backdrop, true,
-    {Size=UDim2.fromScale(1,1),TextXAlignment=Enum.TextXAlignment.Center})
-table.insert(accentItems, {obj=brandMark,prop="BackgroundColor3"})
-local navArea = new("Frame", rail, {BackgroundTransparency=1,Position=UDim2.fromOffset(0,82),
-    Size=UDim2.new(1,0,1,-132)})
-new("UIListLayout", navArea, {Padding=UDim.new(0,6),HorizontalAlignment=Enum.HorizontalAlignment.Center,
-    SortOrder=Enum.SortOrder.LayoutOrder})
-local sidebarVersion = label(rail,"v2.0",10,P.faint,false,
-    {Position=UDim2.new(0,0,1,-36),Size=UDim2.new(1,0,0,20),TextXAlignment=Enum.TextXAlignment.Center})
-
-local body = new("Frame", main, {BackgroundTransparency=1,
-    Position=UDim2.fromOffset(66,0),Size=UDim2.new(1,-66,1,0)})
-local top = new("Frame", body, {BackgroundTransparency=1,Size=UDim2.new(1,0,0,62)})
-local title = label(top, "AETHER", 16, P.text, true,
-    {Position=UDim2.fromOffset(18,11),Size=UDim2.new(1,-170,0,25)})
-local subtitle = label(top, "SCRIPT WORKSPACE   /   MOBILE", 9, P.faint, true,
-    {Position=UDim2.fromOffset(18,35),Size=UDim2.new(1,-130,0,14)})
-new("Frame", top,{BackgroundColor3=P.border,BorderSizePixel=0,
-    Position=UDim2.new(0,0,1,-1),Size=UDim2.new(1,0,0,1)})
-local minimize = button(top,"−",{Position=UDim2.new(1,-91,0,15),Size=UDim2.fromOffset(30,30),TextSize=21})
-local close = button(top,"×",{Position=UDim2.new(1,-51,0,15),Size=UDim2.fromOffset(30,30),TextSize=19})
-
--- Floating, draggable launch button independent of the window's scale.
-orb = button(screen,"A",{Name="FloatingLauncher",AnchorPoint=Vector2.new(.5,.5),
-    Position=UDim2.new(1,-37,.47,0),Size=UDim2.fromOffset(52,52),TextSize=21},"accent")
-corner(orb,17)
-stroke(orb, P.text, .70)
-orb.Visible = false
-
-local pagesRoot = new("Frame", body,{BackgroundTransparency=1,Position=UDim2.fromOffset(0,62),
-    Size=UDim2.new(1,0,1,-62),ClipsDescendants=true})
-for _, name in ipairs({"Editor","Library","Discover","Console","Settings"}) do
-    pageItems[name] = new("Frame", pagesRoot,{Name=name,BackgroundTransparency=1,
-        Size=UDim2.fromScale(1,1),Visible=name=="Editor"})
-end
-local function navButton(name, glyph, index)
-    local b = button(navArea,"",{Name=name,Size=UDim2.fromOffset(55,59),LayoutOrder=index,
-        BackgroundTransparency=1})
-    corner(b,11)
-    local sideGlow = new("Frame",b,{BackgroundColor3=accent,BorderSizePixel=0,
-        Size=UDim2.fromOffset(3,24),Position=UDim2.fromOffset(0,17),Visible=false})
-    corner(sideGlow,3)
-    table.insert(accentItems,{obj=sideGlow,prop="BackgroundColor3"})
-    local ico = label(b,glyph,18,P.muted,true,{Size=UDim2.new(1,0,0,32),
-        Position=UDim2.fromOffset(0,4),TextXAlignment=Enum.TextXAlignment.Center})
-    local caption = label(b,name:upper(),8,P.faint,true,
-        {Position=UDim2.fromOffset(0,37),Size=UDim2.new(1,0,0,12),TextXAlignment=Enum.TextXAlignment.Center})
-    navItems[name]={button=b,icon=ico,caption=caption,strip=sideGlow}
-    b.Activated:Connect(function() showPage(name) end)
-end
-navButton("Editor","</>",1)
-navButton("Library","▤",2)
-navButton("Discover","⌕",3)
-navButton("Console",">_",4)
-navButton("Settings","⚙",5)
-showPage = function(name)
-    if not pageItems[name] then return end
-    activePage = name
-    for page, frame in pairs(pageItems) do frame.Visible = page == name end
-    for page, controls in pairs(navItems) do
-        local chosen = page == name
-        controls.strip.Visible=chosen
-        animate(controls.button,{BackgroundTransparency=chosen and 0 or 1,
-            BackgroundColor3=chosen and P.raised or P.rail},.16)
-        controls.icon.TextColor3=chosen and accent or P.muted
-        controls.caption.TextColor3=chosen and P.text or P.faint
+-- PERSISTENCE / TABS. Original Basalt used .basalt/tabs.json; this version
+-- keeps a separate file to avoid corrupting any existing Basalt workspace.
+local scriptTabs={}
+local activeScript=nil
+local FOLDER='.basalt'
+local FILE=FOLDER..'/improved_workspace.json'
+local hasStorage=type(readfile)=='function' and type(writefile)=='function'
+local function saveFile()
+    if not hasStorage then return false end
+    local payload={version=3,active=1,tabs={}}
+    for i,t in ipairs(scriptTabs or {}) do
+        table.insert(payload.tabs,{name=t.name,code=t.code})
+        if t==activeScript then payload.active=i end
     end
-    subtitle.Text=(name:upper().."   /   MOBILE WORKSPACE")
-end
-
--- Lightweight notifications; no blocking popups for routine actions.
-local toast = pane(screen, {Name="Toast",AnchorPoint=Vector2.new(.5,0),
-    Position=UDim2.new(.5,0,0,-76),Size=UDim2.fromOffset(270,47),
-    BackgroundColor3=P.raised,ZIndex=60}, 12)
-toastLabel = label(toast,"",12,P.text,true,
-    {Position=UDim2.fromOffset(15,0),Size=UDim2.new(1,-25,1,0),ZIndex=61,
-    TextTruncate=Enum.TextTruncate.AtEnd})
-notify = function(message)
-    toastVersion += 1
-    local v=toastVersion
-    toastLabel.Text=tostring(message)
-    animate(toast,{Position=UDim2.new(.5,0,0,18)},.24)
-    task.delay(2.35,function()
-        if toastVersion==v and toast.Parent then
-            animate(toast,{Position=UDim2.new(.5,0,0,-76)},.26)
+    local ok=pcall(function()
+        if type(isfolder)=='function' and type(makefolder)=='function' then
+            if not isfolder(FOLDER) then makefolder(FOLDER) end
         end
+        writefile(FILE,HttpService:JSONEncode(payload))
+    end)
+    return ok
+end
+local redrawTabs,loadActive,renderLibrary
+local writeRevision=0
+local function queueSave()
+    writeRevision=writeRevision+1
+    local revision=writeRevision
+    task.delay(.9,function()
+        if alive and revision==writeRevision then saveFile() end
     end)
 end
-
---[[ EDITOR -- Hydrogen layout + Basalt's multiple files/tabs. ]]
-local editorPage = pageItems.Editor
-local tabbar = new("Frame",editorPage,{BackgroundTransparency=1,Size=UDim2.new(1,0,0,46)})
-tabStrip = new("ScrollingFrame",tabbar,{Name="OpenScripts",Active=true,
-    BackgroundTransparency=1,BorderSizePixel=0,Position=UDim2.fromOffset(12,5),
-    Size=UDim2.new(1,-57,0,36),ScrollBarThickness=0,CanvasSize=UDim2.fromOffset(0,0),
-    ScrollingDirection=Enum.ScrollingDirection.X})
-tabLayout = new("UIListLayout",tabStrip,{FillDirection=Enum.FillDirection.Horizontal,
-    SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,6)})
-tabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    tabStrip.CanvasSize=UDim2.fromOffset(tabLayout.AbsoluteContentSize.X+8,0)
-end)
-local newTabButton=button(tabbar,"+",{Position=UDim2.new(1,-43,0,6),Size=UDim2.fromOffset(31,31),TextSize=21})
-local infoBar = new("Frame",editorPage,{BackgroundTransparency=1,
-    Position=UDim2.fromOffset(12,45),Size=UDim2.new(1,-24,0,34)})
-local activeDot = new("Frame",infoBar,{BackgroundColor3=P.green,BorderSizePixel=0,
-    Position=UDim2.fromOffset(2,13),Size=UDim2.fromOffset(7,7)})
-corner(activeDot,4)
-lineInfo = label(infoBar,"1 line",11,P.muted,false,
-    {Position=UDim2.fromOffset(17,1),Size=UDim2.fromOffset(100,30)})
-byteInfo = label(infoBar,"0 chars",11,P.faint,false,
-    {Position=UDim2.fromOffset(104,1),Size=UDim2.fromOffset(100,30)})
-statusInfo = label(infoBar,"LUAU",10,P.faint,true,
-    {Position=UDim2.new(1,-92,0,1),Size=UDim2.fromOffset(90,30),TextXAlignment=Enum.TextXAlignment.Right})
-local codeSurface = pane(editorPage,{Name="CodeSurface",Position=UDim2.fromOffset(12,80),
-    Size=UDim2.new(1,-24,1,-151),BackgroundColor3=P.backdrop,ClipsDescendants=true},12)
-local codeHeader = new("Frame",codeSurface,{BackgroundColor3=P.pane,BorderSizePixel=0,
-    Size=UDim2.new(1,0,0,29)})
-label(codeHeader,"  ●    code.luau",10,P.muted,true,{Size=UDim2.new(1,-14,1,0)})
-new("Frame",codeHeader,{BackgroundColor3=P.border,BorderSizePixel=0,
-    Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1)})
-editorScroll = new("ScrollingFrame",codeSurface,{Name="CodeScroll",BackgroundTransparency=1,
-    Position=UDim2.fromOffset(0,29),Size=UDim2.new(1,0,1,-29),
-    BorderSizePixel=0,Active=true,CanvasSize=UDim2.new(),
-    ScrollingDirection=Enum.ScrollingDirection.XY,ScrollBarThickness=3,
-    ScrollBarImageColor3=P.faint,ScrollBarImageTransparency=.4})
-local gutter = new("Frame",editorScroll,{Name="LineNumbers",BackgroundColor3=P.rail,
-    BorderSizePixel=0,Position=UDim2.fromOffset(0,0),Size=UDim2.fromOffset(47,100)})
-new("Frame",gutter,{BackgroundColor3=P.border,BorderSizePixel=0,
-    Position=UDim2.new(1,-1,0,0),Size=UDim2.new(0,1,1,0)})
-lineLabel=label(gutter,"1",fontSize,P.faint,false,
-    {Font=Enum.Font.Code,Position=UDim2.fromOffset(5,10),Size=UDim2.new(1,-14,1,-12),
-    TextXAlignment=Enum.TextXAlignment.Right,TextYAlignment=Enum.TextYAlignment.Top})
-lineLabel.Font=Enum.Font.Code
-syntaxLabel=label(editorScroll,"",fontSize,P.text,false,
-    {Name="SyntaxColours",Position=UDim2.fromOffset(59,10),
-    TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,
-    RichText=true,TextWrapped=false,ZIndex=1})
-syntaxLabel.Font=Enum.Font.Code
-codeBox = new("TextBox",editorScroll,{Name="LuauEditor",BackgroundTransparency=1,
-    BorderSizePixel=0,Position=UDim2.fromOffset(59,10),
-    Size=UDim2.fromOffset(650,320),Text=DEFAULT_CODE,
-    ClearTextOnFocus=false,MultiLine=true,TextWrapped=false,
-    TextEditable=true,TextXAlignment=Enum.TextXAlignment.Left,
-    TextYAlignment=Enum.TextYAlignment.Top,TextColor3=P.text,
-    PlaceholderColor3=P.faint,PlaceholderText="-- Enter your Luau code here...",
-    Font=Enum.Font.Code,TextSize=fontSize,ZIndex=2})
-local actionBar = new("Frame",editorPage,{BackgroundTransparency=1,
-    Position=UDim2.new(0,12,1,-64),Size=UDim2.new(1,-24,0,54)})
-local actionLayout=new("UIListLayout",actionBar,{FillDirection=Enum.FillDirection.Horizontal,
-    HorizontalAlignment=Enum.HorizontalAlignment.Center,
-    VerticalAlignment=Enum.VerticalAlignment.Center,
-    Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
-local runButton=button(actionBar,"▶  EXECUTE",{Name="Run",Size=UDim2.fromOffset(109,41),LayoutOrder=1,TextSize=11},"accent")
-local saveButton=button(actionBar,"SAVE",{Name="Save",Size=UDim2.fromOffset(65,41),LayoutOrder=2,TextSize=10})
-local pasteButton=button(actionBar,"PASTE",{Name="Paste",Size=UDim2.fromOffset(65,41),LayoutOrder=3,TextSize=10})
-local copyButton=button(actionBar,"COPY",{Name="Copy",Size=UDim2.fromOffset(65,41),LayoutOrder=4,TextSize=10})
-local clearButton=button(actionBar,"CLEAR",{Name="Clear",Size=UDim2.fromOffset(65,41),LayoutOrder=5,TextSize=10})
-
-local keywords = {}
-for word in string.gmatch("and break do else elseif end false for function if in local nil not or repeat return then true until while continue self", "%S+") do keywords[word]=true end
-local function xml(s)
-    local escaped=s:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;")
-    return escaped
+local function cleanName(v)
+    v=tostring(v or 'script.luau')
+    if #v>36 then v=v:sub(1,36) end
+    return v:gsub('[%c]','')
 end
-local function tint(source, col)
-    return '<font color="'..col..'">'..xml(source)..'</font>'
+redrawTabs=function()
+    for _,child in ipairs(ScriptTabs:GetChildren()) do
+        if child:IsA('TextButton') then child:Destroy() end
+    end
+    for i,t in ipairs(scriptTabs) do
+        local selected=t==activeScript
+        local b=btn(ScriptTabs,'File'..i,'',UDim2.new(),UDim2.fromOffset(118,29),
+            selected and P.selected or P.panel,9)
+        b.LayoutOrder=i;b.BackgroundTransparency=selected and 0 or .22
+        text(b,'FileName',t.name,UDim2.fromOffset(10,0),UDim2.fromOffset(83,29),
+            11,selected and P.text or P.muted,Enum.Font.GothamMedium)
+        local exit=btn(b,'Remove','×',UDim2.fromOffset(96,6),UDim2.fromOffset(16,17),P.selected,5)
+        exit.BackgroundTransparency=1;exit.TextSize=16;exit.TextColor3=P.muted
+        connect(b.MouseButton1Click,function()
+            if t==activeScript then return end
+            activeScript.code=Source.Text
+            activeScript=t
+            loadActive();redrawTabs();queueSave()
+        end)
+        connect(exit.MouseButton1Click,function()
+            if #scriptTabs==1 then log('Keep at least one tab','warning');return end
+            local old=t==activeScript
+            local index=table.find(scriptTabs,t)
+            if index then table.remove(scriptTabs,index) end
+            if old then
+                activeScript=scriptTabs[math.clamp(index or 1,1,#scriptTabs)]
+                loadActive()
+            end
+            redrawTabs();queueSave()
+        end)
+    end
+    if renderLibrary then renderLibrary() end
 end
-local function syntaxHighlight(src)
-    if #src>13000 then return xml(src) end
-    local out={}
-    local i,n=1,#src
+
+local keywordSet={}
+for word in string.gmatch('and break continue do else elseif end export false for function if in local nil not or repeat return then true type typeof until while', '%S+') do
+    keywordSet[word]=true
+end
+local builtinSet={}
+for word in string.gmatch('game workspace script Instance Enum Color3 Vector3 Vector2 UDim2 UDim task print warn error pairs ipairs pcall xpcall tostring tonumber math string table getgenv loadstring require', '%S+') do
+    builtinSet[word]=true
+end
+local function esc(s)
+    return s:gsub('&','&amp;'):gsub('<','&lt;'):gsub('>','&gt;'):gsub('"','&quot;'):gsub("'",'&apos;')
+end
+local function wrap(t,hex) return '<font color="#'..hex..'">'..esc(t)..'</font>' end
+local function tintSyntax(src)
+    if #src>25000 then return esc(src:sub(1,25000)) end
+    local out={};local i=1;local n=#src
     while i<=n do
-        local ch=src:sub(i,i)
-        local nxt=src:sub(i+1,i+1)
-        if ch=="-" and nxt=="-" then
-            local k=src:find("\n",i,true) or (n+1)
-            table.insert(out,tint(src:sub(i,k-1),"#7B899A")); i=k
-        elseif ch=='"' or ch=="'" then
-            local j=i+1
-            while j<=n do
-                local c=src:sub(j,j)
-                if c=="\\" then j+=2
-                elseif c==ch then j+=1; break
-                else j+=1 end
+        local c=src:sub(i,i)
+        if src:sub(i,i+1)=='--' then
+            local e=src:find('\n',i,true) or (n+1)
+            out[#out+1]=wrap(src:sub(i,e-1),'828282');i=e
+        elseif c=='"' or c=="'" then
+            local first=i;local quote=c;i=i+1
+            while i<=n do
+                local q=src:sub(i,i)
+                if q=='\\' then i=i+2
+                elseif q==quote then i=i+1;break
+                elseif q=='\n' then break
+                else i=i+1 end
             end
-            table.insert(out,tint(src:sub(i,j-1),"#A8E6BB")); i=j
-        elseif ch:match("[%a_]") then
-            local j=i+1
-            while j<=n and src:sub(j,j):match("[%w_]") do j+=1 end
-            local word=src:sub(i,j-1)
-            table.insert(out, keywords[word] and tint(word,"#B9A0FB") or xml(word))
-            i=j
-        elseif ch:match("%d") then
-            local j=i+1
-            while j<=n and src:sub(j,j):match("[%w%.]") do j+=1 end
-            table.insert(out,tint(src:sub(i,j-1),"#F9C67E")); i=j
+            out[#out+1]=wrap(src:sub(first,i-1),'C7E8A2')
+        elseif c:match('%d') and (i==1 or not src:sub(i-1,i-1):match('[%w_]')) then
+            local a,b=src:find('^%d[%d%.]*',i)
+            local value=src:sub(a or i,b or i)
+            out[#out+1]=wrap(value,'E7B782');i=(b or i)+1
+        elseif c:match('[%a_]') then
+            local a,b=src:find('^[%a_][%w_]*',i)
+            local word=src:sub(a or i,b or i)
+            if keywordSet[word] then out[#out+1]=wrap(word,'D1B5FF')
+            elseif builtinSet[word] then out[#out+1]=wrap(word,'A6D4F6')
+            else out[#out+1]=esc(word) end
+            i=(b or i)+1
         else
-            table.insert(out,xml(ch)); i+=1
+            out[#out+1]=esc(c);i=i+1
         end
     end
     return table.concat(out)
 end
-local lastSource, lastW, lastH = "", 0, 0
-refreshCodeGeometry = function()
-    if not editorScroll then return end
-    local text=codeBox.Text
-    local lineCount,maxWidth,curWidth=1,0,0
-    for k=1,#text do
-        local c=text:sub(k,k)
-        if c=="\n" then
-            lineCount+=1; maxWidth=math.max(maxWidth,curWidth); curWidth=0
-        elseif c=="\t" then curWidth+=4
-        else curWidth+=1 end
-    end
-    maxWidth=math.max(maxWidth,curWidth)
-    local lineHeight=math.floor(fontSize*1.22+1)
-    local w=math.max(editorScroll.AbsoluteSize.X,math.ceil(70+maxWidth*fontSize*.65+50))
-    local h=math.max(editorScroll.AbsoluteSize.Y,math.ceil(23+lineCount*lineHeight+30))
-    if lastW~=w or lastH~=h then
-        editorScroll.CanvasSize=UDim2.fromOffset(w,h)
-        gutter.Size=UDim2.fromOffset(47,h)
-        codeBox.Size=UDim2.fromOffset(math.max(w-70,200),h-20)
-        syntaxLabel.Size=codeBox.Size
-        lastW,lastH=w,h
-    end
-    lineLabel.Size=UDim2.fromOffset(33,h-18)
+local function redrawEditor()
+    local src=Source.Text
+    Highlight.Text=tintSyntax(src)
+    local lines=1
+    for _ in src:gmatch('\n') do lines=lines+1 end
     local nums={}
-    for k=1,math.min(lineCount,2000) do nums[k]=tostring(k) end
-    lineLabel.Text=table.concat(nums,"\n")
-    lineInfo.Text=tostring(lineCount)..(lineCount==1 and " line" or " lines")
-    byteInfo.Text=tostring(#text).." chars"
-    lineLabel.TextSize=fontSize
-    codeBox.TextSize=fontSize
-    syntaxLabel.TextSize=fontSize
-    if syntaxEnabled then
-        syntaxLabel.Text=syntaxHighlight(text)
-        syntaxLabel.Visible=true
-        codeBox.TextTransparency=.95
-    else
-        syntaxLabel.Visible=false
-        codeBox.TextTransparency=0
-    end
+    for i=1,math.min(lines,1000) do nums[i]=tostring(i) end
+    LineNumbers.Text=table.concat(nums,'\n')
+    local longest=0
+    for ln in (src..'\n'):gmatch('(.-)\n') do longest=math.max(longest,#ln) end
+    local h=math.max(160,math.ceil(lines*15.1)+14)
+    local w=math.max(465,math.floor(longest*7.8)+70)
+    Highlight.Size=UDim2.fromOffset(w-41,h)
+    Source.Size=UDim2.fromOffset(w-41,h)
+    LineNumbers.Size=UDim2.fromOffset(25,h)
+    divider.Size=UDim2.fromOffset(1,h)
+    EditorScroll.CanvasSize=UDim2.fromOffset(w,h)
 end
-
-local isChangingTab=false
-updateEditor = function()
-    isChangingTab=true
-    local t=tabs[activeIndex]
-    codeBox.Text=t and t.source or ""
-    isChangingTab=false
-    refreshCodeGeometry()
-    renderTabs()
+loadActive=function()
+    if not activeScript then return end
+    Source.Text=activeScript.code or ''
+    redrawEditor()
 end
-track(codeBox:GetPropertyChangedSignal("Text"):Connect(function()
-    if not isChangingTab then
-        local t=tabs[activeIndex]
-        if t then t.source=codeBox.Text; scheduleSave() end
-    end
-    refreshCodeGeometry()
-end))
-track(editorScroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-    lastW,lastH=0,0
-    refreshCodeGeometry()
-end))
-
-renderTabs = function()
-    for _, child in ipairs(tabStrip:GetChildren()) do
-        if child:IsA("TextButton") then child:Destroy() end
-    end
-    for index, t in ipairs(tabs) do
-        local active=index==activeIndex
-        local width=math.clamp(#t.name*6+46,110,163)
-        local entry=button(tabStrip,"",{Name="Tab_"..tostring(t.id),LayoutOrder=index,
-            Size=UDim2.fromOffset(width,32),BackgroundColor3=active and P.raised or P.rail})
-        entry.BackgroundColor3=active and P.raised or P.rail
-        if active then stroke(entry,accent,.28,1) end
-        local filename=label(entry,t.name,11,active and P.text or P.muted,active,
-            {Position=UDim2.fromOffset(11,0),Size=UDim2.new(1,-36,1,0),
-            TextTruncate=Enum.TextTruncate.AtEnd})
-        local x=button(entry,"×",{Position=UDim2.new(1,-26,0,5),Size=UDim2.fromOffset(22,22),
-            TextSize=14,BackgroundTransparency=1})
-        x.BackgroundTransparency=1
-        entry.Activated:Connect(function()
-            activeIndex=index
-            updateEditor(); scheduleSave()
-        end)
-        x.Activated:Connect(function()
-            if #tabs==1 then
-                tabs[1].source=""; tabs[1].name="Untitled"; activeIndex=1
-            else
-                table.remove(tabs,index)
-                if activeIndex>index then activeIndex-=1 end
-                activeIndex=math.clamp(activeIndex,1,#tabs)
-            end
-            updateEditor(); scheduleSave()
-        end)
-    end
-end
-local function newTab(name,source)
-    if #tabs>=MAX_TABS then notify("Maximum 12 tabs reached"); return false end
-    local t={id=nextId,name=name or ("Untitled "..tostring(nextId)),source=source or ""}
-    nextId+=1
-    table.insert(tabs,t)
-    activeIndex=#tabs
-    showPage("Editor")
-    updateEditor(); scheduleSave()
-    return true
-end
-newTabButton.Activated:Connect(function() newTab() end)
-
--- Shared modal: save / rename / delete confirmations.
-local modalCover=new("Frame",screen,{BackgroundColor3=P.backdrop,BackgroundTransparency=.30,
-    BorderSizePixel=0,Size=UDim2.fromScale(1,1),Visible=false,Active=true,ZIndex=80})
-local dialog=pane(modalCover,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
-    Size=UDim2.fromOffset(330,208),BackgroundColor3=P.pane,ZIndex=81},15)
-local dialogScale = new("UIScale",dialog,{Scale=1})
-modalTitle=label(dialog,"Save script",17,P.text,true,
-    {Position=UDim2.fromOffset(19,14),Size=UDim2.new(1,-38,0,27),ZIndex=82})
-modalHint=label(dialog,"Choose a name for your saved script.",11,P.muted,false,
-    {Position=UDim2.fromOffset(19,44),Size=UDim2.new(1,-38,0,27),ZIndex=82,TextWrapped=true})
-modalField=new("TextBox",dialog,{BackgroundColor3=P.raised,BorderSizePixel=0,
-    Position=UDim2.fromOffset(19,84),Size=UDim2.new(1,-38,0,39),
-    ClearTextOnFocus=false,Text="",PlaceholderText="Script name",
-    Font=Enum.Font.Gotham,TextSize=13,TextColor3=P.text,PlaceholderColor3=P.faint,
-    ZIndex=82})
-corner(modalField,9); stroke(modalField,P.border,.35)
-modalCancel=button(dialog,"CANCEL",{Position=UDim2.new(0,19,1,-57),
-    Size=UDim2.fromOffset(127,39),ZIndex=82})
-modalAction=button(dialog,"SAVE",{Position=UDim2.new(1,-146,1,-57),
-    Size=UDim2.fromOffset(127,39),ZIndex=82},"accent")
-local modalCallback=nil
-local function hideModal()
-    modalCover.Visible=false; modalCallback=nil
-end
-modalCancel.Activated:Connect(hideModal)
-modalAction.Activated:Connect(function()
-    local callback=modalCallback
-    if callback then callback(modalField.Text) end
+connect(Source:GetPropertyChangedSignal('Text'),function()
+    if activeScript then activeScript.code=Source.Text end
+    redrawEditor();queueSave()
 end)
-local function askModal(heading,hint,initial,action,callback,usesField)
-    modalTitle.Text=heading; modalHint.Text=hint
-    modalField.Text=initial or ""
-    modalField.Visible=usesField~=false
-    modalAction.Text=action
-    modalCover.Visible=true
-    modalCallback=callback
+-- Best-effort custom caret for transparent-source syntax overlay.
+local function placeCaret()
+    if not Caret.Visible then return end
+    local p=Source.CursorPosition
+    if type(p)~='number' or p<1 then Caret.Visible=false;return end
+    local prefix=Source.Text:sub(1,p-1)
+    local last=prefix:match('([^\n]*)$') or ''
+    local row=1;for _ in prefix:gmatch('\n') do row=row+1 end
+    local width=TextService:GetTextSize(last,13,Enum.Font.Code,Vector2.new(10000,40)).X
+    Caret.Position=UDim2.fromOffset(37+width,3+(row-1)*15)
 end
+connect(Source.Focused,function() Caret.Visible=true;placeCaret() end)
+connect(Source.FocusLost,function() Caret.Visible=false end)
+connect(Source:GetPropertyChangedSignal('CursorPosition'),placeCaret)
 
-local function currentTab() return tabs[activeIndex] end
-local function saveToLibrary()
-    local t=currentTab()
-    if not t then return end
-    askModal("Save to library","Give this script a name. Your code is retained in the editor.",
-        t.name,"SAVE",function(name)
-            name=name:match("^%s*(.-)%s*$")
-            if name=="" then notify("Enter a script name"); return end
-            name=name:sub(1,58)
-            local found=nil
-            for _, item in ipairs(library) do
-                if item.name==name then found=item; break end
-            end
-            if found then found.source=t.source
-            else table.insert(library,1,{name=name,source=t.source}) end
-            t.name=name; hideModal(); renderTabs(); renderLibrary(); scheduleSave()
-            notify("Saved "..name)
-        end,true)
+local function newTab(title,code)
+    if activeScript then activeScript.code=Source.Text end
+    if #scriptTabs>=16 then log('Maximum 16 tabs','warning');return end
+    local t={name=cleanName(title or ('script_'..(#scriptTabs+1)..'.luau')),code=code or ''}
+    table.insert(scriptTabs,t);activeScript=t
+    loadActive();redrawTabs();queueSave()
 end
-saveButton.Activated:Connect(saveToLibrary)
-local function copyText(value)
-    if type(setclipboard)~="function" then notify("Clipboard API is unavailable");return end
-    local ok=pcall(setclipboard,value)
-    notify(ok and "Copied to clipboard" or "Clipboard failed")
-end
-local function pasteText()
-    if type(getclipboard)~="function" then notify("Clipboard API is unavailable");return end
-    local ok,text=pcall(getclipboard)
-    if not ok or type(text)~="string" then notify("Could not read clipboard");return end
-    if #text>180000 then notify("Clipboard text is too large");return end
-    codeBox.Text=text
-    notify("Pasted clipboard text")
-end
-copyButton.Activated:Connect(function()copyText(codeBox.Text)end)
-pasteButton.Activated:Connect(pasteText)
-clearButton.Activated:Connect(function()codeBox.Text="";notify("Editor cleared")end)
+connect(AddTab.MouseButton1Click,function()newTab()end)
 
---[[ CONSOLE ]]
-local consolePage=pageItems.Console
-local consoleHeader=label(consolePage,"EXECUTION LOG",14,P.text,true,
-    {Position=UDim2.fromOffset(17,12),Size=UDim2.new(1,-180,0,28)})
-local clearLogs=button(consolePage,"CLEAR",{Position=UDim2.new(1,-151,0,10),Size=UDim2.fromOffset(64,33)})
-local copyLogs=button(consolePage,"COPY",{Position=UDim2.new(1,-79,0,10),Size=UDim2.fromOffset(64,33)})
-local consoleWrap=pane(consolePage,{Position=UDim2.fromOffset(12,55),Size=UDim2.new(1,-24,1,-67),
-    BackgroundColor3=P.backdrop,ClipsDescendants=true},11)
-consoleScroll=new("ScrollingFrame",consoleWrap,{BackgroundTransparency=1,
-    Position=UDim2.fromOffset(8,8),Size=UDim2.new(1,-16,1,-16),CanvasSize=UDim2.new(),
-    ScrollBarThickness=3,ScrollBarImageColor3=P.muted,BorderSizePixel=0})
-consoleLayout=new("UIListLayout",consoleScroll,{Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
-consoleLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    consoleScroll.CanvasSize=UDim2.fromOffset(0,consoleLayout.AbsoluteContentSize.Y+10)
-    task.defer(function()
-        if consoleScroll.Parent then
-            consoleScroll.CanvasPosition=Vector2.new(0,math.max(0,consoleLayout.AbsoluteContentSize.Y-consoleScroll.AbsoluteSize.Y+16))
-        end
-    end)
-end)
-local function logColor(level)
-    return level=="ERROR" and P.error or (level=="WARN" and P.warn or
-        (level=="RUN" and accent or (level=="PRINT" and P.green or P.muted)))
+local function clipRead()
+    if type(getclipboard)~='function' then return nil,'Clipboard API unavailable' end
+    local ok,s=pcall(getclipboard)
+    if ok and type(s)=='string' then return s end
+    return nil,tostring(s)
 end
-addLog=function(level,message)
-    message=tostring(message)
-    local time=os.date("%H:%M:%S")
-    local item={kind=level,msg=message,time=time}
-    table.insert(logs,item)
-    if #logs>100 then table.remove(logs,1) end
-    if not consoleScroll then return end
-    local card=pane(consoleScroll,{Name="LogLine",Size=UDim2.new(1,-4,0,40),
-        BackgroundColor3=P.pane,LayoutOrder=#logs},7)
-    local col=logColor(level)
-    local stripe=new("Frame",card,{BackgroundColor3=col,BorderSizePixel=0,
-        Size=UDim2.fromOffset(3,22),Position=UDim2.fromOffset(0,9)})
-    corner(stripe,2)
-    label(card,level,9,col,true,{Position=UDim2.fromOffset(12,4),Size=UDim2.fromOffset(52,18)})
-    label(card,time,9,P.faint,false,{Position=UDim2.new(1,-76,0,4),Size=UDim2.fromOffset(68,18),
-        TextXAlignment=Enum.TextXAlignment.Right})
-    local content=label(card,message,11,P.text,false,
-        {Position=UDim2.fromOffset(12,22),Size=UDim2.new(1,-24,0,16),
-        TextWrapped=true,TextYAlignment=Enum.TextYAlignment.Top})
-    local estimated=math.max(1,math.ceil(#message/math.max(20,math.floor((consoleScroll.AbsoluteSize.X-38)/6.5))))
-    card.Size=UDim2.new(1,-4,0,math.max(45,28+estimated*14))
-    content.Size=UDim2.new(1,-24,1,-24)
-    local children={}
-    for _, obj in ipairs(consoleScroll:GetChildren()) do
-        if obj.Name=="LogLine" then table.insert(children,obj) end
-    end
-    if #children>100 then children[1]:Destroy() end
+local function clipWrite(s)
+    if type(setclipboard)~='function' then log('Clipboard API unavailable','warning');return end
+    local ok,err=pcall(setclipboard,s)
+    if ok then log('Copied to clipboard','success') else log(err,'error') end
 end
-clearLogs.Activated:Connect(function()
-    table.clear(logs)
-    for _,obj in ipairs(consoleScroll:GetChildren()) do
-        if obj.Name=="LogLine" then obj:Destroy() end
+local function runScript(src,label)
+    if type(src)~='string' or src:match('^%s*$') then log('Nothing to execute','warning');return end
+    local compiler=loadstring
+    if type(compiler)~='function' then
+        log('loadstring is unavailable in this environment','error')
+        setPage('Console');return
     end
-    notify("Console cleared")
-end)
-copyLogs.Activated:Connect(function()
-    local arr={}
-    for _,entry in ipairs(logs) do table.insert(arr,"["..entry.time.."] ["..entry.kind.."] "..entry.msg) end
-    copyText(table.concat(arr,"\n"))
-end)
-
-local function executeCode(source)
-    if not source or source:match("^%s*$") then
-        notify("Editor is empty");return
-    end
-    runCount+=1
-    local thisRun=runCount
-    addLog("RUN","Run #"..thisRun.." started ("..tostring(#source).." bytes)")
-    statusInfo.Text="RUNNING"
-    notify("Executing script #"..thisRun)
+    local okay,fn,err=pcall(compiler,src)
+    if not okay then log('Compile: '..tostring(fn),'error');setPage('Console');return end
+    if type(fn)~='function' then log('Compile: '..tostring(err),'error');setPage('Console');return end
+    statusText.Text='RUNNING';statusDot.BackgroundColor3=P.orange
+    log('Executing '..tostring(label or (activeScript and activeScript.name or 'script')))
     task.spawn(function()
-        local loader=loadstring
-        if type(loader)=="function" then
-            local ok, chunk, compileError=pcall(loader,source)
-            if not ok then
-                addLog("ERROR","Loader failed: "..tostring(chunk))
-            elseif type(chunk)~="function" then
-                addLog("ERROR",tostring(compileError or "Compilation failed"))
-            else
-                -- Prefer a per-chunk environment, never replace global print/warn.
-                -- Some native executors do not support setfenv on their chunks;
-                -- in those cases, run status and errors still work.
-                if type(getfenv)=="function" and type(setfenv)=="function" then
-                    local okEnv,baseEnv=pcall(getfenv,chunk)
-                    if okEnv and type(baseEnv)=="table" then
-                        local originalPrint=baseEnv.print or print
-                        local originalWarn=baseEnv.warn or warn
-                        local function captured(kind,...)
-                            local parts={}
-                            for i=1,select("#",...) do
-                                local okText,value=pcall(tostring,select(i,...))
-                                parts[i]=okText and value or "<unprintable>"
-                            end
-                            pcall(addLog,kind,table.concat(parts,"  "))
-                        end
-                        local scoped=setmetatable({
-                            print=function(...)
-                                captured("PRINT",...)
-                                return originalPrint(...)
-                            end,
-                            warn=function(...)
-                                captured("WARN",...)
-                                if type(originalWarn)=="function" then return originalWarn(...) end
-                            end,
-                        },{__index=baseEnv,__newindex=baseEnv})
-                        pcall(setfenv,chunk,scoped)
-                    end
-                end
-                local values=table.pack(pcall(chunk))
-                if values[1] then
-                    addLog("INFO","Run #"..thisRun.." returned successfully"..
-                        (values.n>1 and (" | result: "..tostring(values[2])) or ""))
-                else
-                    addLog("ERROR",tostring(values[2]))
-                    showPage("Console")
-                end
-            end
+        local started=os.clock()
+        local worked,res=pcall(fn)
+        if not alive then return end
+        if worked then
+            log(string.format('Finished in %.2fs',os.clock()-started),'success')
+            statusText.Text='READY';statusDot.BackgroundColor3=P.green
         else
-            local environment=nil
-            if type(getgenv)=="function" then
-                local ok,env=pcall(getgenv)
-                if ok and type(env)=="table" then environment=env end
-            end
-            local runner=(environment and environment.runcode) or runcode
-            if type(runner)=="function" then
-                local ok,err=pcall(runner,source)
-                addLog(ok and "INFO" or "ERROR",ok and "Script sent to executor backend" or tostring(err))
-            else
-                addLog("ERROR","No loadstring() or runcode() available in this environment")
-                showPage("Console")
-            end
+            log('Runtime: '..tostring(res),'error')
+            statusText.Text='ERROR';statusDot.BackgroundColor3=P.red
         end
-        statusInfo.Text="LUAU"
     end)
 end
-runButton.Activated:Connect(function() executeCode(codeBox.Text) end)
-
---[[ LIBRARY -- source is always opened for review, never auto-run. ]]
-local libPage=pageItems.Library
-label(libPage,"SAVED SCRIPTS",14,P.text,true,
-    {Position=UDim2.fromOffset(17,12),Size=UDim2.new(1,-145,0,27)})
-local libSave=button(libPage,"+ SAVE",{Position=UDim2.new(1,-96,0,10),Size=UDim2.fromOffset(82,32)})
-libSave.Activated:Connect(saveToLibrary)
-local searchContainer=pane(libPage,{Position=UDim2.fromOffset(13,53),
-    Size=UDim2.new(1,-26,0,40),BackgroundColor3=P.raised},9)
-librarySearch=new("TextBox",searchContainer,{BackgroundTransparency=1,Text="",
-    Font=Enum.Font.Gotham,TextSize=12,PlaceholderText="Search your saved scripts...",
-    PlaceholderColor3=P.faint,TextColor3=P.text,ClearTextOnFocus=false,
-    Position=UDim2.fromOffset(12,0),Size=UDim2.new(1,-24,1,0),TextXAlignment=Enum.TextXAlignment.Left})
-libraryScroll=new("ScrollingFrame",libPage,{BackgroundTransparency=1,BorderSizePixel=0,
-    Position=UDim2.fromOffset(12,103),Size=UDim2.new(1,-24,1,-114),
-    ScrollBarThickness=3,ScrollBarImageColor3=P.faint,CanvasSize=UDim2.new()})
-libraryLayout=new("UIListLayout",libraryScroll,{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder})
-libraryLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    libraryScroll.CanvasSize=UDim2.fromOffset(0,libraryLayout.AbsoluteContentSize.Y+6)
+connect(Run.MouseButton1Click,function()runScript(Source.Text)end)
+connect(Paste.MouseButton1Click,function()
+    local s,err=clipRead()
+    if s then Source.Text=s;log('Pasted '..#s..' characters','success')
+    else log(err,'warning') end
 end)
+connect(ExecClip.MouseButton1Click,function()
+    local s,err=clipRead()
+    if s then runScript(s,'clipboard') else log(err,'warning') end
+end)
+connect(Copy.MouseButton1Click,function()clipWrite(Source.Text)end)
+connect(Clear.MouseButton1Click,function()Source.Text='';log('Editor cleared')end)
+
+-- HUB: keeps Basalt's local script manager model, with searchable entries.
+local hubTitle=text(hubPage,'Title','SCRIPT HUB',UDim2.fromOffset(15,12),UDim2.fromOffset(220,22),14,P.text,Enum.Font.GothamBold)
+local hubSub=text(hubPage,'Sub','Local scripts · tap to load',UDim2.fromOffset(15,33),UDim2.fromOffset(240,17),11,P.muted)
+local searchField=node('TextBox',hubPage,{
+    Name='Search',Position=UDim2.fromOffset(15,55),Size=UDim2.fromOffset(506,29),
+    BackgroundColor3=P.code,BorderSizePixel=0,Text='',PlaceholderText='Search scripts...',
+    ClearTextOnFocus=false,TextColor3=P.text,PlaceholderColor3=P.muted,TextSize=12,
+    Font=Enum.Font.Gotham,TextXAlignment=Enum.TextXAlignment.Left,
+})
+round(searchField,9);stroke(searchField,P.edge,1,.85)
+node('UIPadding',searchField,{PaddingLeft=UDim.new(0,12)})
+local libraryView=node('ScrollingFrame',hubPage,{
+    Name='Scripts',Position=UDim2.fromOffset(12,91),Size=UDim2.fromOffset(512,131),
+    BackgroundTransparency=1,BorderSizePixel=0,
+    ScrollBarThickness=2,ScrollBarImageColor3=P.muted,
+    AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(),
+})
+local libLayout=node('UIListLayout',libraryView,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
+local library={
+    {name='Hello world',code='print("Hello from Basalt")'},
+    {name='Client information',code='local p = game:GetService("Players").LocalPlayer\nprint(p.Name, game.PlaceId)'},
+    {name='Frame-rate counter',code='local r = game:GetService("RunService")\nlocal frames = 0\nlocal t = os.clock()\nr.RenderStepped:Connect(function()\n    frames += 1\n    if os.clock() - t >= 1 then\n        print("FPS", frames)\n        frames = 0\n        t = os.clock()\n    end\nend)'},
+}
 renderLibrary=function()
-    if not libraryScroll then return end
-    for _,child in ipairs(libraryScroll:GetChildren()) do
-        if child:IsA("Frame") or child:IsA("TextLabel") then child:Destroy() end
+    for _,c in ipairs(libraryView:GetChildren()) do
+        if c:IsA('TextButton') then c:Destroy() end
     end
-    local query=(librarySearch and librarySearch.Text or ""):lower()
-    local shown=0
-    for index,item in ipairs(library) do
-        if query=="" or item.name:lower():find(query,1,true) then
-            shown+=1
-            local card=pane(libraryScroll,{Size=UDim2.new(1,-3,0,73),LayoutOrder=index,
-                BackgroundColor3=P.pane},10)
-            local titleLabel=label(card,item.name,12,P.text,true,
-                {Position=UDim2.fromOffset(12,7),Size=UDim2.new(1,-190,0,26),
-                TextTruncate=Enum.TextTruncate.AtEnd})
-            label(card,tostring(#item.source).." chars  •  saved script",10,P.muted,false,
-                {Position=UDim2.fromOffset(12,36),Size=UDim2.new(1,-177,0,19)})
-            local open=button(card,"OPEN",{Position=UDim2.new(1,-149,0,19),Size=UDim2.fromOffset(69,34)},"accent")
-            local del=button(card,"×",{Position=UDim2.new(1,-72,0,19),Size=UDim2.fromOffset(58,34),TextSize=18})
-            open.Activated:Connect(function()
-                if newTab(item.name,item.source) then notify("Opened "..item.name) end
-            end)
-            del.Activated:Connect(function()
-                askModal("Delete script?","Remove '"..item.name.."' from your saved library?",
-                    "","DELETE",function()
-                        table.remove(library,index)
-                        hideModal();renderLibrary();scheduleSave();notify("Script deleted")
-                    end,false)
+    local q=searchField.Text:lower()
+    local entries={}
+    for _,t in ipairs(scriptTabs) do table.insert(entries,{name=t.name,code=t.code,personal=true}) end
+    for _,t in ipairs(library) do table.insert(entries,t) end
+    local found=0
+    for i,t in ipairs(entries) do
+        if q=='' or t.name:lower():find(q,1,true) then
+            found=found+1
+            local b=btn(libraryView,'Script'..i,'',UDim2.new(),UDim2.new(1,-5,0,40),P.code,10)
+            b.LayoutOrder=i;stroke(b,P.edge,1,.9)
+            icon(b,t.personal and 'code' or 'cloud',UDim2.fromOffset(10,10),20,P.muted)
+            text(b,'Name',t.name,UDim2.fromOffset(42,0),UDim2.new(1,-122,1,0),12,P.text,Enum.Font.GothamMedium)
+            local typeText=text(b,'Type',t.personal and 'TAB' or 'SAMPLE',UDim2.new(1,-74,0,0),UDim2.fromOffset(65,40),9,P.muted,Enum.Font.GothamMedium,Enum.TextXAlignment.Right)
+            connect(b.MouseButton1Click,function()
+                newTab(t.name,t.code)
+                setPage('Code');log('Loaded '..t.name,'success')
             end)
         end
     end
-    if shown==0 then
-        label(libraryScroll,#library==0 and "No saved scripts yet. Save one from the editor." or "No matching scripts.",
-            12,P.muted,false,{Size=UDim2.new(1,0,0,58),TextXAlignment=Enum.TextXAlignment.Center})
-    end
+    hubSub.Text=tostring(found)..' available scripts · tap to load'
 end
-librarySearch:GetPropertyChangedSignal("Text"):Connect(renderLibrary)
+connect(searchField:GetPropertyChangedSignal('Text'),renderLibrary)
 
---[[ DISCOVER -- Basalt-style ScriptBlox explorer; LOAD for review, not auto-run. ]]
-local discover=pageItems.Discover
-label(discover,"SCRIPT EXPLORER",14,P.text,true,
-    {Position=UDim2.fromOffset(17,10),Size=UDim2.new(1,-26,0,29)})
-label(discover,"Search ScriptBlox and inspect source before execution",10,P.muted,false,
-    {Position=UDim2.fromOffset(17,33),Size=UDim2.new(1,-26,0,20),TextTruncate=Enum.TextTruncate.AtEnd})
-local searchRow=pane(discover,{Position=UDim2.fromOffset(12,66),Size=UDim2.new(1,-24,0,43),
-    BackgroundColor3=P.raised},10)
-searchInput=new("TextBox",searchRow,{BackgroundTransparency=1,Text="",
-    PlaceholderText="Search scripts...",PlaceholderColor3=P.faint,
-    ClearTextOnFocus=false,Font=Enum.Font.Gotham,TextSize=12,
-    TextColor3=P.text,TextXAlignment=Enum.TextXAlignment.Left,
-    Position=UDim2.fromOffset(13,0),Size=UDim2.new(1,-106,1,0)})
-local searchButton=button(searchRow,"SEARCH",{Position=UDim2.new(1,-89,0,5),Size=UDim2.fromOffset(83,33)},"accent")
-resultInfo=label(discover,"Enter a search to browse public scripts.",11,P.faint,false,
-    {Position=UDim2.fromOffset(17,117),Size=UDim2.new(1,-30,0,25)})
-resultScroll=new("ScrollingFrame",discover,{BackgroundTransparency=1,
-    Position=UDim2.fromOffset(12,146),Size=UDim2.new(1,-24,1,-160),
-    BorderSizePixel=0,CanvasSize=UDim2.new(),ScrollBarThickness=3,
-    ScrollBarImageColor3=P.muted})
-resultLayout=new("UIListLayout",resultScroll,{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder})
-resultLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    resultScroll.CanvasSize=UDim2.fromOffset(0,resultLayout.AbsoluteContentSize.Y+8)
-end)
-local function getResponse(url)
-    local requester=request or http_request or (type(syn)=="table" and syn.request)
-    if type(requester)=="function" then
-        local ok,res=pcall(requester,{Url=url,Method="GET",Headers={Accept="application/json"}})
-        if ok and type(res)=="table" and type(res.Body)=="string" then
-            if res.StatusCode and tonumber(res.StatusCode)>=400 then return nil,"HTTP "..tostring(res.StatusCode) end
-            return res.Body
-        end
-    end
-    local ok,body=pcall(function()return game:HttpGet(url)end)
-    if ok and type(body)=="string" then return body end
-    return nil,"HTTP requests are not supported"
+-- AGENT PANEL. Basalt's original agent requires an unavailable native/backend.
+-- Preserve the page; provide functional offline workspace operations instead
+-- of impersonating the missing network AI service.
+text(agentPage,'Title','WORKSPACE AGENT',UDim2.fromOffset(15,12),UDim2.fromOffset(275,23),14,P.text,Enum.Font.GothamBold)
+text(agentPage,'Desc','Local commands · no remote AI backend',UDim2.fromOffset(15,36),UDim2.fromOffset(475,20),11,P.muted)
+local agentCard=frame(agentPage,'AgentCard',UDim2.fromOffset(13,65),UDim2.fromOffset(510,108),P.code,12)
+text(agentCard,'Heading','Quick commands',UDim2.fromOffset(12,8),UDim2.fromOffset(300,23),12,P.text,Enum.Font.GothamMedium)
+local promptField=node('TextBox',agentCard,{
+    Name='Prompt',Position=UDim2.fromOffset(11,37),Size=UDim2.fromOffset(395,30),
+    BackgroundColor3=P.selected,BorderSizePixel=0,Text='',PlaceholderText='run, clear, new, copy, save, console',
+    ClearTextOnFocus=false,TextColor3=P.text,PlaceholderColor3=P.muted,
+    TextXAlignment=Enum.TextXAlignment.Left,TextSize=11,Font=Enum.Font.Gotham,
+})
+round(promptField,8);node('UIPadding',promptField,{PaddingLeft=UDim.new(0,10)})
+local send=btn(agentCard,'Send','Go',UDim2.fromOffset(418,37),UDim2.fromOffset(80,30),P.accent,9)
+send.TextColor3=P.ink
+local agentResult=text(agentCard,'Result','Available: run · clear · new · copy · save · console',UDim2.fromOffset(12,77),UDim2.fromOffset(485,23),10,P.muted)
+local function agentGo()
+    local cmd=promptField.Text:lower():match('^%s*(.-)%s*$')
+    if cmd=='run' or cmd=='execute' then runScript(Source.Text);agentResult.Text='Execution requested'
+    elseif cmd=='clear' then Source.Text='';agentResult.Text='Editor cleared'
+    elseif cmd=='new' then newTab();agentResult.Text='New tab created'
+    elseif cmd=='copy' then clipWrite(Source.Text);agentResult.Text='Copy requested'
+    elseif cmd=='save' then agentResult.Text=saveFile() and 'Workspace saved' or 'File API unavailable'
+    elseif cmd=='console' then setPage('Console');agentResult.Text='Console opened'
+    elseif cmd=='' then agentResult.Text='Enter a local command'
+    else agentResult.Text='Unknown command. This is not a connected AI model.' end
 end
-local searchSerial=0
-local function searchScripts()
-    local q=searchInput.Text:match("^%s*(.-)%s*$")
-    if q=="" then notify("Enter a search query");return end
-    searchSerial+=1
-    local serial=searchSerial
-    resultInfo.Text="Searching ScriptBlox..."
-    for _,child in ipairs(resultScroll:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
+connect(send.MouseButton1Click,agentGo)
+connect(promptField.FocusLost,function(submit)if submit then agentGo() end end)
+text(agentPage,'AgentNote','The reconstructed Basalt agent relies on native components that are',UDim2.fromOffset(16,181),UDim2.fromOffset(490,16),10,P.muted)
+text(agentPage,'AgentNote2','not included in the reconstruction; it is not simulated here.',UDim2.fromOffset(16,197),UDim2.fromOffset(490,16),10,P.muted)
+
+-- SETTINGS PAGE
+text(settingsPage,'Title','SETTINGS',UDim2.fromOffset(15,12),UDim2.fromOffset(220,26),14,P.text,Enum.Font.GothamBold)
+text(settingsPage,'Desc','Basalt visual defaults · refined interactions',UDim2.fromOffset(15,36),UDim2.fromOffset(485,20),11,P.muted)
+local opacity=0.08
+local options={}
+local function setting(label,desc,y,action)
+    local b=btn(settingsPage,label,'',UDim2.fromOffset(13,y),UDim2.fromOffset(510,43),P.code,10)
+    stroke(b,P.edge,1,.91)
+    text(b,'Label',label,UDim2.fromOffset(13,2),UDim2.fromOffset(376,19),12,P.text,Enum.Font.GothamMedium)
+    text(b,'Detail',desc,UDim2.fromOffset(13,21),UDim2.fromOffset(440,17),10,P.muted)
+    icon(b,'add',UDim2.fromOffset(481,13),16,P.muted)
+    connect(b.MouseButton1Click,action)
+    return b
+end
+setting('Panel opacity','Toggle solid / glass',62,function()
+    opacity=(opacity<.1) and .27 or .08
+    tween(Glass,.2,{BackgroundTransparency=opacity})
+    tween(Dock,.2,{BackgroundTransparency=opacity})
+end)
+setting('Save workspace','Write script tabs to local storage',110,function()
+    log(saveFile() and 'Workspace saved' or 'File API unavailable',hasStorage and 'success' or 'warning')
+end)
+setting('Reset panel position','Return to Basalt\'s original position',158,function()
+    tween(Panel,.22,{Position=UDim2.fromOffset(16,16)})
+end)
+
+-- FLOATING TOGGLE / PANEL DRAG
+local showing=true
+local designScale=1
+local function showUI(v)
+    showing=v
+    Panel.Visible=v
+    toggle.Visible=not v
+    dimmer.Visible=false
+    if v then
+        Scale.Scale=math.max(.4,Scale.Scale*.965)
+        tween(Scale,.2,{Scale=designScale or 1})
     end
-    task.spawn(function()
-        local url="https://scriptblox.com/api/script/search?q="..HttpService:UrlEncode(q).."&max=20&mode=free"
-        local body,err=getResponse(url)
-        if serial~=searchSerial then return end
-        if not body then resultInfo.Text="Search unavailable: "..tostring(err);addLog("WARN",resultInfo.Text);return end
-        local data=jsonDecode(body)
-        local scripts=data and data.result and data.result.scripts
-        if type(scripts)~="table" then resultInfo.Text="No readable ScriptBlox results";return end
-        resultInfo.Text=tostring(#scripts).." scripts found — tap LOAD to inspect code"
-        for index,entry in ipairs(scripts) do
-            local name=tostring(entry.title or "Untitled Script"):sub(1,80)
-            local source=entry.script
-            local isUsable=type(source)=="string" and #source>0 and #source<200000
-            local card=pane(resultScroll,{Size=UDim2.new(1,-3,0,83),LayoutOrder=index},10)
-            label(card,name,12,P.text,true,
-                {Position=UDim2.fromOffset(12,8),Size=UDim2.new(1,-105,0,29),
-                TextTruncate=Enum.TextTruncate.AtEnd})
-            local meta=tostring(entry.game and entry.game.name or "Community script")
-            label(card,meta:sub(1,66),10,P.muted,false,
-                {Position=UDim2.fromOffset(12,40),Size=UDim2.new(1,-107,0,23),
-                TextTruncate=Enum.TextTruncate.AtEnd})
-            local load=button(card,isUsable and "LOAD" or "N/A",{
-                Position=UDim2.new(1,-89,0,23),Size=UDim2.fromOffset(75,35)},isUsable and "accent" or nil)
-            load.Activated:Connect(function()
-                if not isUsable then notify("No source available for this script");return end
-                if newTab(name,source) then notify("Source loaded for review") end
-            end)
-        end
+end
+connect(close.MouseButton1Click,function()showUI(false)end)
+connect(toggle.MouseButton1Click,function()showUI(true)end)
+connect(dimmer.MouseButton1Click,function()showUI(false)end)
+local dragging=false
+local dragStart=nil
+local panelStart=nil
+local dragInput=nil
+local function clampPanel(x,y)
+    local view=Root.AbsoluteSize
+    local w=536*Scale.Scale
+    local h=310*Scale.Scale
+    return math.clamp(x,0,math.max(0,view.X-w)),math.clamp(y,0,math.max(0,view.Y-h))
+end
+local function setupDrag(handle,target,isFloat)
+    connect(handle.InputBegan,function(input)
+        if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+        dragging=true;dragInput=input;dragStart=input.Position;panelStart=target.Position
+        local endConn
+        endConn=connect(input.Changed,function()
+            if input.UserInputState==Enum.UserInputState.End then
+                dragging=false
+                if endConn then endConn:Disconnect() end
+            end
+        end)
     end)
 end
-searchButton.Activated:Connect(searchScripts)
-searchInput.FocusLost:Connect(function(enter) if enter then searchScripts() end end)
+setupDrag(logo,Panel)
+setupDrag(ver,Panel)
+setupDrag(noteText,Panel)
+-- Drag from unused header/status area. The nav buttons remain normal buttons.
+setupDrag(statusText,Panel)
+connect(UIS.InputChanged,function(input)
+    if not dragging or not dragStart or not panelStart then return end
+    if input~=dragInput and input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+    local delta=input.Position-dragStart
+    local factor=Scale.Scale>0 and Scale.Scale or 1
+    local newX=panelStart.X.Offset+delta.X/factor
+    local newY=panelStart.Y.Offset+delta.Y/factor
+    local actualX,actualY=clampPanel(newX*factor,newY*factor)
+    Panel.Position=UDim2.fromOffset(actualX/factor,actualY/factor)
+end)
+-- Floating toggle itself is draggable on touch; tap still restores UI.
+local toggleStart, toggleOrigin
+connect(toggle.InputBegan,function(input)
+    if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+    toggleStart=input.Position;toggleOrigin=toggle.Position
+end)
+connect(toggle.InputChanged,function(input)
+    if not toggleStart or not toggleOrigin then return end
+    if input.UserInputType~=Enum.UserInputType.Touch and input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+    local delta=input.Position-toggleStart
+    if delta.Magnitude>10 then
+        toggle.Position=UDim2.new(toggleOrigin.X.Scale,toggleOrigin.X.Offset+delta.X,toggleOrigin.Y.Scale,toggleOrigin.Y.Offset+delta.Y)
+    end
+end)
+connect(toggle.InputEnded,function()toggleStart=nil end)
 
---[[ SETTINGS ]]
-local settings=pageItems.Settings
-label(settings,"APPEARANCE",14,P.text,true,
-    {Position=UDim2.fromOffset(17,14),Size=UDim2.new(1,-34,0,30)})
-local settingsScroll=new("ScrollingFrame",settings,{BackgroundTransparency=1,
-    Position=UDim2.fromOffset(12,52),Size=UDim2.new(1,-24,1,-64),
-    BorderSizePixel=0,CanvasSize=UDim2.new(),ScrollBarThickness=3,
-    ScrollBarImageColor3=P.faint})
-local settingsLayout=new("UIListLayout",settingsScroll,{Padding=UDim.new(0,10),SortOrder=Enum.SortOrder.LayoutOrder})
-settingsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    settingsScroll.CanvasSize=UDim2.fromOffset(0,settingsLayout.AbsoluteContentSize.Y+12)
-end)
-local function settingCard(order,name,desc,height)
-    local f=pane(settingsScroll,{Size=UDim2.new(1,-3,0,height or 76),LayoutOrder=order},11)
-    label(f,name,12,P.text,true,{Position=UDim2.fromOffset(13,10),Size=UDim2.new(1,-26,0,23)})
-    label(f,desc,10,P.muted,false,{Position=UDim2.fromOffset(13,32),
-        Size=UDim2.new(1,-26,0,20),TextTruncate=Enum.TextTruncate.AtEnd})
-    return f
+local function fit()
+    local viewport=Root.AbsoluteSize
+    if viewport.X<=0 or viewport.Y<=0 then return end
+    -- Basalt used 536x310 and scaled against a 704-point reference size.
+    -- Limit to device-safe viewport instead of cropping on portrait phones.
+    designScale=math.clamp(math.min((viewport.X-22)/536,(viewport.Y-22)/310,1.52),.46,1.52)
+    Scale.Scale=designScale
+    local newX,newY=clampPanel(Panel.Position.X.Offset*designScale,Panel.Position.Y.Offset*designScale)
+    Panel.Position=UDim2.fromOffset(newX/designScale,newY/designScale)
 end
-local themeCard=settingCard(1,"Accent colour","Minimal dark UI with subtle accent",112)
-local themes={}
-for i,k in ipairs({"Ice","Mint","Violet"}) do
-    local b=button(themeCard,k:upper(),{Position=UDim2.new((i-1)/3,13+(i-1)*-1,1,-47),
-        Size=UDim2.new(1/3,-17,0,34),TextSize=10})
-    themes[k]=b
-    b.Activated:Connect(function()
-        currentTheme=k;accent=ACCENTS[k];refreshTheme();scheduleSave();notify(k.." theme selected")
+connect(Root:GetPropertyChangedSignal('AbsoluteSize'),fit)
+
+-- FPS and clock are optional cosmetic services in the original status row.
+local frames=0;local elapsed=0;local nextClock=0
+connect(RunService.RenderStepped,function(dt)
+    if not alive then return end
+    frames=frames+1;elapsed=elapsed+dt
+    if elapsed>=1 then
+        fpsText.Text=tostring(math.floor(frames/elapsed+.5))..' FPS'
+        frames=0;elapsed=0
+    end
+    local tm=os.clock()
+    if tm>=nextClock then
+        clockText.Text=os.date('%H:%M')
+        nextClock=tm+8
+    end
+end)
+
+-- Load persisted workspace when possible, without taking over original Basalt files.
+local loaded=false
+if hasStorage then
+    local ok,payload=pcall(function()
+        if type(isfile)=='function' and not isfile(FILE) then return nil end
+        return HttpService:JSONDecode(readfile(FILE))
     end)
-end
-local fontCard=settingCard(2,"Editor font size","Change the monospaced code editor scale",86)
-local sizeIndicator=label(fontCard,tostring(fontSize).." px",12,P.text,true,
-    {Position=UDim2.new(1,-130,0,37),Size=UDim2.fromOffset(56,32),TextXAlignment=Enum.TextXAlignment.Center})
-local fontDown=button(fontCard,"−",{Position=UDim2.new(1,-167,0,39),Size=UDim2.fromOffset(32,29),TextSize=17})
-local fontUp=button(fontCard,"+",{Position=UDim2.new(1,-62,0,39),Size=UDim2.fromOffset(36,29),TextSize=17})
-local function adjustFont(d)
-    fontSize=math.clamp(fontSize+d,11,19)
-    sizeIndicator.Text=tostring(fontSize).." px"
-    lastW,lastH=0,0;refreshCodeGeometry();scheduleSave()
-end
-fontDown.Activated:Connect(function()adjustFont(-1)end)
-fontUp.Activated:Connect(function()adjustFont(1)end)
-local syntaxCard=settingCard(3,"Syntax colours","Highlight keywords, numbers and comments",85)
-local syntaxToggle=button(syntaxCard,"",{Position=UDim2.new(1,-91,0,41),Size=UDim2.fromOffset(77,31)})
-local function refreshSyntax()
-    syntaxToggle.Text=syntaxEnabled and "ON" or "OFF"
-    syntaxToggle.TextColor3=syntaxEnabled and accent or P.muted
-    refreshCodeGeometry()
-end
-syntaxToggle.Activated:Connect(function() syntaxEnabled=not syntaxEnabled;refreshSyntax();scheduleSave() end)
-local animationCard=settingCard(4,"Animations","Smooth transitions and microinteractions",85)
-local animToggle=button(animationCard,"",{Position=UDim2.new(1,-91,0,41),Size=UDim2.fromOffset(77,31)})
-local function refreshAnimation()
-    animToggle.Text=animationsEnabled and "ON" or "OFF"
-    animToggle.TextColor3=animationsEnabled and accent or P.muted
-end
-animToggle.Activated:Connect(function()
-    animationsEnabled=not animationsEnabled;refreshAnimation();scheduleSave()
-end)
-local storageCard=settingCard(5,"Workspace storage","Tabs and saved scripts are stored when file APIs exist",90)
-local storageStatus=label(storageCard,type(writefile)=="function" and "PERSISTENCE AVAILABLE" or "SESSION ONLY — FILE API UNAVAILABLE",
-    10,type(writefile)=="function" and P.green or P.warn,true,
-    {Position=UDim2.fromOffset(13,59),Size=UDim2.new(1,-20,0,18)})
-refreshTheme=function()
-    for _,a in ipairs(accentItems) do
-        if a.obj and a.obj.Parent then
-            a.obj[a.prop]=accent
-            if a.obj==brandMark then
-                local g=brandMark:FindFirstChildOfClass("UIGradient")
-                if g then g.Color=ColorSequence.new(accent,accent:Lerp(Color3.new(0,0,0),.35)) end
+    if ok and type(payload)=='table' and type(payload.tabs)=='table' then
+        for _,t in ipairs(payload.tabs) do
+            if #scriptTabs>=16 then break end
+            if type(t)=='table' and type(t.name)=='string' and type(t.code)=='string' then
+                table.insert(scriptTabs,{name=cleanName(t.name),code=t.code})
             end
         end
-    end
-    for name,entry in pairs(navItems) do
-        entry.icon.TextColor3=name==activePage and accent or P.muted
-    end
-    for name,b in pairs(themes) do
-        b.BackgroundColor3=name==currentTheme and accent or P.raised
-        b.TextColor3=name==currentTheme and P.backdrop or P.muted
-    end
-    refreshSyntax();refreshAnimation();renderTabs()
-end
-
--- Size the whole experience for narrow portrait phones and wide landscape screens.
-local viewportWidth, viewportHeight=740,480
-local function updateLayout()
-    Camera=workspace.CurrentCamera or Camera
-    local vp=Camera and Camera.ViewportSize or Vector2.new(900,600)
-    viewportWidth,viewportHeight=vp.X,vp.Y
-    local portrait=vp.Y>vp.X*1.1
-    local baseW=portrait and 426 or 808
-    local baseH=portrait and 666 or 470
-    local fit=math.min(1,(vp.X-22)/baseW,(vp.Y-28)/baseH)
-    fit=math.max(.38,fit)
-    dialogScale.Scale=math.clamp(math.min((vp.X-24)/330,(vp.Y-22)/208),.70,1)
-    main.Size=UDim2.fromOffset(baseW,baseH)
-    mainScale.Scale=fit
-    local available=baseW-66-24
-    local actions={runButton,saveButton,pasteButton,copyButton,clearButton}
-    local gap=6*4
-    local desired={109,65,65,65,65}
-    local sum=0
-    for _,w in ipairs(desired) do sum+=w end
-    local proportion=math.min(1,(available-gap)/sum)
-    for i,b in ipairs(actions) do
-        b.Size=UDim2.fromOffset(math.floor(desired[i]*proportion),41)
-    end
-    lastW,lastH=0,0
-    task.defer(refreshCodeGeometry)
-end
-updateLayout()
-if Camera then track(Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateLayout)) end
-track(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-    Camera=workspace.CurrentCamera
-    updateLayout()
-    if Camera then track(Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateLayout)) end
-end))
-
--- Touch + mouse dragging with viewport bounds and floating-toggle safeguards.
-local function connectDrag(handle,target,isLauncher)
-    local pressed,origin,startPos,moved=false,nil,nil,false
-    local suppressClick=false
-    handle.InputBegan:Connect(function(input)
-        if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
-            pressed=true; origin=input.Position; startPos=target.Position; moved=false
-            local ended
-            ended=input.Changed:Connect(function()
-                if input.UserInputState==Enum.UserInputState.End then
-                    pressed=false
-                    if moved then
-                        suppressClick=true
-                        task.delay(.2,function() suppressClick=false end)
-                    end
-                    if ended then ended:Disconnect() end
-                end
-            end)
+        if #scriptTabs>0 then
+            activeScript=scriptTabs[math.clamp(tonumber(payload.active) or 1,1,#scriptTabs)]
+            loaded=true
         end
-    end)
-    track(UIS.InputChanged:Connect(function(input)
-        if not pressed then return end
-        if input.UserInputType~=Enum.UserInputType.MouseMovement and
-           input.UserInputType~=Enum.UserInputType.Touch then return end
-        local delta=input.Position-origin
-        if delta.Magnitude>7 then moved=true end
-        local vp=Camera and Camera.ViewportSize or Vector2.new(800,600)
-        local x=startPos.X.Scale*vp.X+startPos.X.Offset+delta.X
-        local y=startPos.Y.Scale*vp.Y+startPos.Y.Offset+delta.Y
-        local margin=isLauncher and 27 or 52
-        x=math.clamp(x,margin,math.max(margin,vp.X-margin))
-        y=math.clamp(y,margin,math.max(margin,vp.Y-margin))
-        if isLauncher then
-            target.Position=UDim2.fromOffset(x,y)
-        else
-            target.Position=UDim2.new(.5,x-vp.X*.5,.5,y-vp.Y*.5)
-        end
-    end))
-    return function() return suppressClick or moved end
+    end
 end
-connectDrag(top,main,false)
-local launcherDragged=connectDrag(orb,orb,true)
-local function toggleWindow(visible)
-    main.Visible=visible
-    backdrop.Visible=false
-    orb.Visible=not visible
-    if visible then updateLayout() end
+if not loaded then
+    local first={name='draft.luau',code='-- Basalt editor\nprint("Hello from Basalt")'}
+    table.insert(scriptTabs,first);activeScript=first
 end
-minimize.Activated:Connect(function()toggleWindow(false)end)
-orb.Activated:Connect(function()
-    if not launcherDragged() then toggleWindow(true) end
-end)
-close.Activated:Connect(function()
-    saveWorkspace()
-    screen:Destroy()
-end)
+loadActive();redrawTabs();renderLibrary();setPage('Code')
+fit()
+log('Basalt UI initialized','success')
+log(hasStorage and 'Workspace persistence enabled' or 'File APIs not available; tabs stay in memory',hasStorage and 'info' or 'warning')
 
-track(UIS.InputBegan:Connect(function(input,processed)
-    local control=UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl)
-    if not control then return end
-    if input.KeyCode==Enum.KeyCode.Return then executeCode(codeBox.Text)
-    elseif input.KeyCode==Enum.KeyCode.S then saveToLibrary()
-    elseif input.KeyCode==Enum.KeyCode.N then newTab() end
-end))
-
--- Startup
-updateEditor()
-renderLibrary()
-refreshTheme()
-showPage("Editor")
-addLog("INFO","Aether workspace initialized")
-addLog("INFO",type(loadstring)=="function" and "loadstring() available" or
-    "loadstring() unavailable; a native runcode backend may be needed")
-if type(writefile)~="function" then addLog("WARN","File APIs unavailable: library is session-only") end
-notify("Aether is ready")
+local function destroy()
+    if not alive then return end
+    saveFile()
+    alive=false
+    for _,c in ipairs(connections) do pcall(function()c:Disconnect()end) end
+    pcall(function()Interface:Destroy()end)
+    pcall(function()DimGui:Destroy()end)
+    if E and type(E)=='table' then E.basaltImproved=nil end
+end
+if E and type(E)=='table' then
+    E.basaltImproved={
+        version='Basalt_UI_source_rebuild_1',gui=Interface,dimGui=DimGui,
+        editor=Source,source=Source,run=runScript,selectTab=setPage,
+        getActiveScript=function()return activeScript end,
+        addScript=newTab,save=saveFile,close=function()showUI(false)end,
+        open=function()showUI(true)end,destroy=destroy,
+    }
+end
