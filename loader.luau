@@ -1,878 +1,1087 @@
---[[
-    NOVA | Mobile Luau Script Workspace
-    Standalone Roblox CoreGui UI. No external assets, modules, or requests.
 
-    Requires an environment that permits parenting to CoreGui and provides
-    loadstring() to execute editor contents. A normal Roblox LocalScript
-    cannot gain those privileges just by running this UI.
 
-    Saved scripts optionally persist when readfile/writefile are available.
-    Only execute code you trust.
-]]
-
+local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
+local UIS = game:GetService("UserInputService")
+local TextService = game:GetService("TextService")
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
+local Camera = workspace.CurrentCamera
 
-local GUI_NAME = "NovaMobileWorkspace"
-local SAVE_FILE = "nova_mobile_saved_scripts.json"
-local WINDOW_W, WINDOW_H = 454, 592
-
-local C = {
-    backdrop = Color3.fromRGB(12, 14, 25),
-    surface = Color3.fromRGB(20, 23, 39),
-    surface2 = Color3.fromRGB(27, 31, 50),
-    raised = Color3.fromRGB(33, 38, 60),
-    line = Color3.fromRGB(56, 62, 88),
-    white = Color3.fromRGB(245, 247, 255),
-    muted = Color3.fromRGB(145, 154, 183),
-    green = Color3.fromRGB(103, 230, 179),
-    yellow = Color3.fromRGB(255, 201, 113),
-    red = Color3.fromRGB(255, 119, 145),
+local ROOT_NAME = "AetherMobileWorkspace"
+local SAVE_PATH = "aether_workspace_v2.json"
+local MAX_TABS = 12
+local DEFAULT_CODE = '-- Welcome to Aether\nprint("Hello from Aether!")'
+local P = {
+    backdrop = Color3.fromRGB(8, 11, 16),
+    base = Color3.fromRGB(14, 18, 25),
+    rail = Color3.fromRGB(11, 14, 20),
+    pane = Color3.fromRGB(18, 23, 31),
+    raised = Color3.fromRGB(25, 32, 43),
+    raisedHover = Color3.fromRGB(33, 42, 54),
+    border = Color3.fromRGB(42, 50, 63),
+    text = Color3.fromRGB(236, 243, 249),
+    muted = Color3.fromRGB(135, 151, 165),
+    faint = Color3.fromRGB(95, 109, 124),
+    error = Color3.fromRGB(255, 119, 134),
+    warn = Color3.fromRGB(252, 197, 104),
+    green = Color3.fromRGB(103, 224, 177),
 }
-
-local accent = Color3.fromRGB(151, 117, 255)
-local pages = {}
-local tabs = {}
-local accentTargets = {}
-local buttonColors = setmetatable({}, {__mode = "k"})
+local ACCENTS = {
+    Ice = Color3.fromRGB(103, 210, 237),
+    Mint = Color3.fromRGB(107, 227, 188),
+    Violet = Color3.fromRGB(177, 146, 255),
+}
+local currentTheme = "Ice"
+local accent = ACCENTS[currentTheme]
+local fontSize = 14
+local syntaxEnabled = true
+local animationsEnabled = true
+local tabs, library, logs = {}, {}, {}
+local activeIndex, activePage, nextId = 1, "Editor", 1
+local dirtyVersion, runCount = 0, 0
+local uiClosed = false
+local accentItems, navItems, pageItems = {}, {}, {}
+local toastVersion = 0
 local connections = {}
-local function track(connection)
-    connections[#connections + 1] = connection
-    return connection
-end
-local logs = {}
-local saved = {}
-local selectedPage = "Editor"
-local modalOpen = false
-local MAX_LOGS = 110
-local appendLog -- forward declaration for early-created UI callbacks
+local codeBox, syntaxLabel, lineLabel, editorScroll, tabStrip, tabLayout
+local lineInfo, byteInfo, statusInfo, toastLabel, saveModal, modalTitle, modalHint
+local modalField, modalAction, modalCancel
+local resultScroll, resultLayout, libraryScroll, libraryLayout, consoleScroll, consoleLayout
+local librarySearch, searchInput, resultInfo
+local main, mainScale, orb, screen, selectedFileName
+local updateEditor, renderTabs, renderLibrary, addLog, showPage, notify
+local refreshTheme, refreshCodeGeometry
 
-local function new(className, props, parent)
-    local obj = Instance.new(className)
-    for key, value in pairs(props or {}) do
-        obj[key] = value
+local function new(class, parent, props)
+    local instance = Instance.new(class)
+    for key, value in pairs(props or {}) do instance[key] = value end
+    if parent then instance.Parent = parent end
+    return instance
+end
+local function corner(parent, radius)
+    return new("UICorner", parent, {CornerRadius=UDim.new(0, radius)})
+end
+local function stroke(parent, color, transparency, thickness)
+    return new("UIStroke", parent, {Color=color or P.border,
+        Transparency=transparency or 0, Thickness=thickness or 1})
+end
+local function gradient(parent, first, last, rotation)
+    return new("UIGradient", parent, {Rotation=rotation or 30,
+        Color=ColorSequence.new(first, last)})
+end
+local function animate(obj, to, t)
+    if not obj or not obj.Parent then return end
+    if not animationsEnabled then
+        for key, value in pairs(to) do obj[key] = value end
+        return
     end
-    if parent then obj.Parent = parent end
-    return obj
+    local tw = TweenService:Create(obj, TweenInfo.new(t or .16,
+        Enum.EasingStyle.Quart, Enum.EasingDirection.Out), to)
+    tw:Play()
+    return tw
 end
-
-local function round(obj, radius)
-    new("UICorner", {CornerRadius = UDim.new(0, radius)}, obj)
-    return obj
+local function label(parent, text, size, color, bold, props)
+    local p = props or {}
+    p.BackgroundTransparency = 1
+    p.BorderSizePixel = 0
+    p.Text = text
+    p.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    p.TextSize = size or 13
+    p.TextColor3 = color or P.text
+    p.TextXAlignment = p.TextXAlignment or Enum.TextXAlignment.Left
+    p.TextYAlignment = p.TextYAlignment or Enum.TextYAlignment.Center
+    return new("TextLabel", parent, p)
 end
-
-local function outline(obj, transparency, color)
-    return new("UIStroke", {
-        Color = color or C.line,
-        Thickness = 1,
-        Transparency = transparency or 0,
-        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-    }, obj)
-end
-
-local function label(parent, text, size, color, bold, pos, dimensions)
-    return new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = pos or UDim2.fromOffset(0, 0),
-        Size = dimensions or UDim2.fromScale(1, 1),
-        Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
-        Text = text,
-        TextSize = size,
-        TextColor3 = color,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Center,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-    }, parent)
-end
-
-local function tween(target, values, duration)
-    local t = TweenService:Create(target,
-        TweenInfo.new(duration or 0.17, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), values)
-    t:Play()
-    return t
-end
-
-local function button(parent, text, pos, dimensions, background, foreground, size)
-    local b = new("TextButton", {
-        Position = pos,
-        Size = dimensions,
-        BackgroundColor3 = background,
-        BorderSizePixel = 0,
-        AutoButtonColor = false,
-        Text = text,
-        TextColor3 = foreground or C.white,
-        TextSize = size or 13,
-        Font = Enum.Font.GothamBold,
-        Selectable = true,
-    }, parent)
-    round(b, 11)
-    buttonColors[b] = background
+local function button(parent, text, props, kind)
+    local p = props or {}
+    p.Text = text
+    p.AutoButtonColor = false
+    p.BorderSizePixel = 0
+    p.BackgroundColor3 = kind == "accent" and accent or P.raised
+    p.TextColor3 = kind == "accent" and P.backdrop or P.text
+    p.Font = Enum.Font.GothamBold
+    p.TextSize = p.TextSize or 12
+    local b = new("TextButton", parent, p)
+    corner(b, p.CornerRadius or 9)
+    if kind == "accent" then
+        table.insert(accentItems, {obj=b, prop="BackgroundColor3"})
+    end
     b.MouseEnter:Connect(function()
-        local base = buttonColors[b] or background
-        tween(b, {BackgroundColor3 = base:Lerp(C.white, 0.09)}, 0.14)
+        if b.Parent then animate(b, {BackgroundColor3=kind == "accent" and accent:Lerp(Color3.new(1,1,1), .14) or P.raisedHover}, .12) end
     end)
     b.MouseLeave:Connect(function()
-        tween(b, {BackgroundColor3 = buttonColors[b] or background}, 0.15)
+        if b.Parent then animate(b, {BackgroundColor3=kind == "accent" and accent or P.raised}, .13) end
     end)
     return b
 end
-
-local function decorateAccent(obj, property)
-    table.insert(accentTargets, {obj = obj, property = property or "BackgroundColor3"})
-    obj[property or "BackgroundColor3"] = accent
+local function pane(parent, props, r)
+    local p = props or {}
+    p.BorderSizePixel = 0
+    p.BackgroundColor3 = p.BackgroundColor3 or P.pane
+    local object = new("Frame", parent, p)
+    corner(object, r or 11)
+    stroke(object, P.border, .20)
+    return object
 end
-
--- CoreGui first; gethui() fallback for runtimes with a different UI container.
-local parentContainer = CoreGui
-local gui = new("ScreenGui", {
-    Name = GUI_NAME,
-    ResetOnSpawn = false,
-    IgnoreGuiInset = true,
-    DisplayOrder = 100000,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-})
-
-local existing = CoreGui:FindFirstChild(GUI_NAME)
-if existing then existing:Destroy() end
-local mounted = pcall(function() gui.Parent = CoreGui end)
-if not mounted and type(gethui) == "function" then
-    local ok, container = pcall(gethui)
-    if ok and container then
-        parentContainer = container
-        local duplicate = parentContainer:FindFirstChild(GUI_NAME)
-        if duplicate then duplicate:Destroy() end
-        mounted = pcall(function() gui.Parent = parentContainer end)
-    end
+local function track(con)
+    table.insert(connections, con)
+    return con
 end
-if not mounted then
-    error("NOVA: This environment cannot create a CoreGui interface.")
+local function safeCall(f, ...)
+    if type(f) ~= "function" then return false, "Unavailable in this executor" end
+    return pcall(f, ...)
 end
-
-gui.Destroying:Connect(function()
-    for _, connection in ipairs(connections) do
-        connection:Disconnect()
-    end
-    table.clear(connections)
-end)
-
--- Main window and subtle two-layer depth effect.
-local main = new("Frame", {
-    Name = "Window",
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(WINDOW_W, WINDOW_H),
-    BackgroundColor3 = C.backdrop,
-    BorderSizePixel = 0,
-    ClipsDescendants = true,
-}, gui)
-round(main, 22)
-outline(main, 0.12)
-
-local scale = new("UIScale", {Scale = 1}, main)
-local camera = workspace.CurrentCamera
-local targetScale = 1
-local function updateScale()
-    camera = workspace.CurrentCamera or camera
-    local viewport = camera and camera.ViewportSize or Vector2.new(800, 700)
-    targetScale = math.min(1, math.max(0.46,
-        (viewport.X - 20) / WINDOW_W,
-        (viewport.Y - 34) / WINDOW_H))
-    scale.Scale = targetScale
+local function jsonEncode(value)
+    local ok, encoded = pcall(function() return HttpService:JSONEncode(value) end)
+    return ok and encoded or nil
 end
-updateScale()
-local viewportConnection
-if camera then
-    viewportConnection = track(camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale))
+local function jsonDecode(value)
+    local ok, decoded = pcall(function() return HttpService:JSONDecode(value) end)
+    return ok and decoded or nil
 end
-
-local accentLine = new("Frame", {
-    Size = UDim2.new(1, 0, 0, 3),
-    BackgroundColor3 = accent,
-    BorderSizePixel = 0,
-}, main)
-decorateAccent(accentLine)
-
-local header = new("Frame", {
-    Name = "DragHandle",
-    Position = UDim2.fromOffset(0, 3),
-    Size = UDim2.new(1, 0, 0, 75),
-    BackgroundTransparency = 1,
-    Active = true,
-}, main)
-
-local logo = new("Frame", {
-    Position = UDim2.fromOffset(16, 15),
-    Size = UDim2.fromOffset(45, 45),
-    BackgroundColor3 = accent,
-    BorderSizePixel = 0,
-}, header)
-round(logo, 14)
-decorateAccent(logo)
-local logoText = label(logo, "N", 27, C.backdrop, true)
-logoText.TextXAlignment = Enum.TextXAlignment.Center
-
-label(header, "NOVA", 21, C.white, true, UDim2.fromOffset(74, 13), UDim2.fromOffset(210, 29))
-label(header, "MOBILE SCRIPT WORKSPACE", 10, C.muted, false,
-    UDim2.fromOffset(75, 41), UDim2.fromOffset(250, 17))
-
-local minimize = button(header, "–", UDim2.new(1, -89, 0, 21), UDim2.fromOffset(31, 31), C.surface2, C.white, 22)
-local close = button(header, "×", UDim2.new(1, -49, 0, 21), UDim2.fromOffset(31, 31), C.surface2, C.muted, 20)
-
-local statusStrip = new("Frame", {
-    Position = UDim2.fromOffset(15, 77),
-    Size = UDim2.new(1, -30, 0, 31),
-    BackgroundColor3 = C.surface,
-    BorderSizePixel = 0,
-}, main)
-round(statusStrip, 9)
-local statusDot = new("Frame", {
-    Position = UDim2.fromOffset(12, 12),
-    Size = UDim2.fromOffset(7, 7),
-    BackgroundColor3 = C.green,
-    BorderSizePixel = 0,
-}, statusStrip)
-round(statusDot, 6)
-local statusText = label(statusStrip, "READY  •  LUAU WORKSPACE", 10, C.muted, true,
-    UDim2.fromOffset(27, 0), UDim2.new(1, -36, 1, 0))
-
-local nav = new("Frame", {
-    Position = UDim2.fromOffset(15, 119),
-    Size = UDim2.new(1, -30, 0, 43),
-    BackgroundColor3 = C.surface,
-    BorderSizePixel = 0,
-}, main)
-round(nav, 12)
-
-for i, name in ipairs({"Editor", "Scripts", "Console", "Settings"}) do
-    local tab = button(nav, name,
-        UDim2.new((i - 1) / 4, 3, 0, 4),
-        UDim2.new(0.25, -6, 1, -8),
-        C.surface, C.muted, 12)
-    tabs[name] = tab
+local function saveWorkspace()
+    if type(writefile) ~= "function" then return end
+    local data = {schema=2, tabs=tabs, activeIndex=activeIndex,
+        library=library, nextId=nextId, accent=currentTheme,
+        fontSize=fontSize, syntax=syntaxEnabled, animations=animationsEnabled}
+    local encoded = jsonEncode(data)
+    if encoded then pcall(writefile, SAVE_PATH, encoded) end
 end
-
-local body = new("Frame", {
-    Position = UDim2.fromOffset(15, 176),
-    Size = UDim2.new(1, -30, 1, -265),
-    BackgroundTransparency = 1,
-}, main)
-
-for _, name in ipairs({"Editor", "Scripts", "Console", "Settings"}) do
-    pages[name] = new("Frame", {
-        Name = name .. "Page",
-        Size = UDim2.fromScale(1, 1),
-        BackgroundTransparency = 1,
-        Visible = false,
-    }, body)
-end
-
-local function sectionHeading(parent, title, subtitle)
-    label(parent, title, 13, C.white, true,
-        UDim2.fromOffset(3, 0), UDim2.new(0.7, 0, 0, 25))
-    return label(parent, subtitle, 10, C.muted, false,
-        UDim2.fromOffset(3, 24), UDim2.new(0.92, 0, 0, 19))
-end
-
--- EDITOR --------------------------------------------------------------------
-local editorPage = pages.Editor
-local editorSubtitle = sectionHeading(editorPage, "CODE EDITOR", "Paste code below, then tap Execute")
-editorSubtitle.Size = UDim2.new(0.59, 0, 0, 19)
-local linesIndicator = label(editorPage, "1 LINE", 10, C.muted, true,
-    UDim2.new(1, -100, 0, 4), UDim2.fromOffset(97, 20))
-linesIndicator.TextXAlignment = Enum.TextXAlignment.Right
-
-local editorCard = new("Frame", {
-    Position = UDim2.fromOffset(0, 51),
-    Size = UDim2.new(1, 0, 1, -51),
-    BackgroundColor3 = C.surface,
-    BorderSizePixel = 0,
-    ClipsDescendants = true,
-}, editorPage)
-round(editorCard, 13)
-outline(editorCard, 0.35)
-
-local codeBox = new("TextBox", {
-    Name = "Code",
-    Position = UDim2.fromOffset(12, 11),
-    Size = UDim2.new(1, -24, 1, -22),
-    BackgroundTransparency = 1,
-    MultiLine = true,
-    ClearTextOnFocus = false,
-    Text = "-- Welcome to NOVA\nprint(\"Hello from NOVA!\")",
-    PlaceholderText = "-- Enter your Luau code here...",
-    PlaceholderColor3 = C.muted,
-    Font = Enum.Font.Code,
-    TextSize = 14,
-    TextColor3 = Color3.fromRGB(224, 231, 255),
-    TextXAlignment = Enum.TextXAlignment.Left,
-    TextYAlignment = Enum.TextYAlignment.Top,
-    TextWrapped = false,
-    BorderSizePixel = 0,
-}, editorCard)
-
-local function updateLineCount()
-    local _, count = codeBox.Text:gsub("\n", "")
-    local lines = count + 1
-    linesIndicator.Text = tostring(lines) .. (lines == 1 and " LINE" or " LINES")
-end
-codeBox:GetPropertyChangedSignal("Text"):Connect(updateLineCount)
-updateLineCount()
-
--- Optional clipboard support: no permissions are bypassed if unavailable.
-local pasteCode = button(editorPage, "PASTE", UDim2.new(1, -165, 0, 24),
-    UDim2.fromOffset(76, 25), C.surface2, C.white, 10)
-local copyCode = button(editorPage, "COPY", UDim2.new(1, -82, 0, 24),
-    UDim2.fromOffset(76, 25), C.surface2, C.white, 10)
-pasteCode.Activated:Connect(function()
-    if type(getclipboard) ~= "function" then
-        appendLog("Clipboard paste is unavailable in this host.", "warn")
-        return
-    end
-    local ok, value = pcall(getclipboard)
-    if ok and type(value) == "string" then
-        codeBox.Text = value
-        appendLog("Pasted clipboard text into editor.", "success")
-    else
-        appendLog("Couldn't read clipboard contents.", "warn")
-    end
-end)
-copyCode.Activated:Connect(function()
-    if type(setclipboard) ~= "function" then
-        appendLog("Clipboard copy is unavailable in this host.", "warn")
-        return
-    end
-    local ok = pcall(setclipboard, codeBox.Text)
-    appendLog(ok and "Editor copied to clipboard." or "Couldn't copy editor text.",
-        ok and "success" or "warn")
-end)
-
--- SCRIPTS LIBRARY ----------------------------------------------------------
-local scriptsPage = pages.Scripts
-sectionHeading(scriptsPage, "SCRIPT LIBRARY", "Tap Load to edit, or Run to execute")
-local scriptScroll = new("ScrollingFrame", {
-    Position = UDim2.fromOffset(0, 52),
-    Size = UDim2.new(1, 0, 1, -52),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 3,
-    ScrollBarImageColor3 = accent,
-    CanvasSize = UDim2.fromOffset(0, 0),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y,
-    ScrollingDirection = Enum.ScrollingDirection.Y,
-}, scriptsPage)
-local scriptLayout = new("UIListLayout", {
-    Padding = UDim.new(0, 9),
-    SortOrder = Enum.SortOrder.LayoutOrder,
-}, scriptScroll)
-new("UIPadding", {PaddingRight = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5)}, scriptScroll)
-
--- CONSOLE ------------------------------------------------------------------
-local consolePage = pages.Console
-sectionHeading(consolePage, "EXECUTION LOG", "Run results, prints, warnings and errors")
-local clearLogs = button(consolePage, "CLEAR LOG", UDim2.new(1, -99, 0, 3),
-    UDim2.fromOffset(99, 29), C.surface2, C.muted, 10)
-local consoleScroll = new("ScrollingFrame", {
-    Position = UDim2.fromOffset(0, 52),
-    Size = UDim2.new(1, 0, 1, -52),
-    BackgroundColor3 = C.surface,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 3,
-    ScrollBarImageColor3 = accent,
-    CanvasSize = UDim2.fromOffset(0, 0),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y,
-    ScrollingDirection = Enum.ScrollingDirection.Y,
-}, consolePage)
-round(consoleScroll, 13)
-new("UIPadding", {
-    PaddingTop = UDim.new(0, 10),
-    PaddingBottom = UDim.new(0, 10),
-    PaddingLeft = UDim.new(0, 10),
-    PaddingRight = UDim.new(0, 10),
-}, consoleScroll)
-new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, consoleScroll)
-
-local function stringify(...)
-    local vals = table.pack(...)
-    local parts = {}
-    for i = 1, vals.n do
-        local ok, str = pcall(tostring, vals[i])
-        parts[#parts + 1] = ok and str or "<unprintable>"
-    end
-    return table.concat(parts, "  ")
-end
-
-appendLog = function(message, kind)
-    if not consoleScroll.Parent then return end
-    local color = C.muted
-    if kind == "error" then color = C.red
-    elseif kind == "success" then color = C.green
-    elseif kind == "warn" then color = C.yellow
-    elseif kind == "info" then color = C.white end
-
-    local entry = new("TextLabel", {
-        Size = UDim2.new(1, -6, 0, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundColor3 = C.surface2,
-        BorderSizePixel = 0,
-        Font = Enum.Font.Code,
-        TextSize = 12,
-        TextColor3 = color,
-        TextWrapped = true,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Top,
-        Text = "[" .. os.date("%H:%M:%S") .. "]  " .. tostring(message),
-        LayoutOrder = #logs + 1,
-    }, consoleScroll)
-    round(entry, 8)
-    new("UIPadding", {
-        PaddingTop = UDim.new(0, 9),
-        PaddingBottom = UDim.new(0, 9),
-        PaddingLeft = UDim.new(0, 10),
-        PaddingRight = UDim.new(0, 9),
-    }, entry)
-    logs[#logs + 1] = entry
-    if #logs > MAX_LOGS then
-        local old = table.remove(logs, 1)
-        old:Destroy()
-    end
-    task.defer(function()
-        if consoleScroll.Parent then
-            consoleScroll.CanvasPosition = Vector2.new(0, 1000000)
-        end
+local function scheduleSave()
+    dirtyVersion += 1
+    local token = dirtyVersion
+    task.delay(1.0, function()
+        if dirtyVersion == token then saveWorkspace() end
     end)
 end
-clearLogs.Activated:Connect(function()
-    for _, entry in ipairs(logs) do entry:Destroy() end
-    table.clear(logs)
-    appendLog("Log cleared.", "info")
-end)
-
--- EXECUTION: relies on the host's existing loadstring implementation.
--- A per-run environment captures print/warn when getfenv/setfenv work.
-local activeExecutions = 0
-local function runSource(source)
-    if source:match("^%s*$") then
-        appendLog("Nothing to execute: the editor is empty.", "warn")
-        return
-    end
-    if type(loadstring) ~= "function" then
-        appendLog("loadstring() is unavailable in this environment.", "error")
-        return
-    end
-
-    appendLog("Compiling script...", "info")
-    statusText.Text = "RUNNING  •  LUAU WORKSPACE"
-    statusDot.BackgroundColor3 = C.yellow
-    activeExecutions += 1
-
-    task.spawn(function()
-        local successCompile, chunk, compileError = pcall(loadstring, source)
-        if not successCompile then
-            appendLog("Compile error: " .. tostring(chunk), "error")
-        elseif type(chunk) ~= "function" then
-            appendLog("Compile error: " .. tostring(compileError), "error")
-        else
-            if type(getfenv) == "function" and type(setfenv) == "function" then
-                local ok, originalEnv = pcall(getfenv, chunk)
-                if ok and type(originalEnv) == "table" then
-                    local wrappedEnv = setmetatable({
-                        print = function(...)
-                            appendLog(stringify(...), "info")
-                            return print(...)
-                        end,
-                        warn = function(...)
-                            appendLog(stringify(...), "warn")
-                            return warn(...)
-                        end,
-                    }, {
-                        __index = originalEnv,
-                        __newindex = originalEnv,
-                    })
-                    pcall(setfenv, chunk, wrappedEnv)
-                end
-            end
-            local ok, result = pcall(chunk)
-            if ok then
-                appendLog("Executed successfully." .. (result ~= nil and (" Return: " .. stringify(result)) or ""), "success")
-            else
-                appendLog("Runtime error: " .. tostring(result), "error")
-            end
-        end
-        activeExecutions -= 1
-        if activeExecutions <= 0 and gui.Parent then
-            statusText.Text = "READY  •  LUAU WORKSPACE"
-            statusDot.BackgroundColor3 = C.green
-        end
-    end)
-end
-
-local examples = {
-    {
-        name = "Hello World",
-        note = "Test script execution and output",
-        code = 'print("Hello from NOVA!")',
-    },
-    {
-        name = "Player Details",
-        note = "Show your current player name",
-        code = 'local p = game:GetService("Players").LocalPlayer\nprint("Player:", p and p.Name or "Unknown")',
-    },
-    {
-        name = "Camera Position",
-        note = "Read your camera world position",
-        code = 'local c = workspace.CurrentCamera\nprint("Camera position:", c and tostring(c.CFrame.Position) or "Unavailable")',
-    },
-}
-
-local function loadSaved()
+local function loadWorkspace()
     if type(readfile) ~= "function" then return end
-    local ok, raw = pcall(readfile, SAVE_FILE)
+    local ok, raw = pcall(readfile, SAVE_PATH)
     if not ok or type(raw) ~= "string" then return end
-    local decodedOK, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
-    if not decodedOK or type(decoded) ~= "table" then return end
-    for _, record in ipairs(decoded) do
-        if type(record) == "table" and type(record.name) == "string" and type(record.code) == "string" then
-            saved[#saved + 1] = {name = record.name:sub(1, 40), code = record.code}
-        end
-        if #saved >= 40 then break end
-    end
-end
-
-local function persistSaved()
-    if type(writefile) ~= "function" then return false, "writefile unavailable" end
-    local ok, err = pcall(function()
-        writefile(SAVE_FILE, HttpService:JSONEncode(saved))
-    end)
-    return ok, err
-end
-
-local function setPage(name)
-    selectedPage = name
-    for key, p in pairs(pages) do p.Visible = (key == name) end
-    for key, tab in pairs(tabs) do
-        buttonColors[tab] = (key == name) and accent or C.surface
-        tween(tab, {
-            BackgroundColor3 = (key == name) and accent or C.surface,
-            TextColor3 = (key == name) and C.backdrop or C.muted,
-        }, 0.17)
-    end
-end
-
-local rebuildScriptLibrary
-local function scriptCard(entry, isSaved, index)
-    local card = new("Frame", {
-        Size = UDim2.new(1, -1, 0, 76),
-        LayoutOrder = index,
-        BackgroundColor3 = C.surface,
-        BorderSizePixel = 0,
-    }, scriptScroll)
-    round(card, 12)
-    outline(card, 0.5)
-
-    label(card, entry.name, 13, C.white, true,
-        UDim2.fromOffset(13, 11), UDim2.new(1, -154, 0, 23))
-    label(card, isSaved and "SAVED SCRIPT" or entry.note, 10, C.muted, false,
-        UDim2.fromOffset(13, 38), UDim2.new(1, -154, 0, 18))
-
-    local loadB = button(card, "LOAD", UDim2.new(1, -135, 0, 22),
-        UDim2.fromOffset(58, 32), C.surface2, C.white, 10)
-    local runB = button(card, "RUN", UDim2.new(1, -70, 0, 22),
-        UDim2.fromOffset(58, 32), accent, C.backdrop, 10)
-    loadB.Activated:Connect(function()
-        codeBox.Text = entry.code
-        setPage("Editor")
-        appendLog("Loaded script: " .. entry.name, "info")
-    end)
-    runB.Activated:Connect(function()
-        runSource(entry.code)
-        setPage("Console")
-    end)
-    if isSaved then
-        local deleteB = button(card, "×", UDim2.new(1, -29, 0, 3),
-            UDim2.fromOffset(23, 19), C.surface2, C.muted, 13)
-        deleteB.Activated:Connect(function()
-            for i, item in ipairs(saved) do
-                if item == entry then
-                    table.remove(saved, i)
-                    persistSaved()
-                    appendLog("Deleted saved script: " .. entry.name, "info")
-                    rebuildScriptLibrary()
-                    break
-                end
+    local data = jsonDecode(raw)
+    if type(data) ~= "table" or data.schema ~= 2 then return end
+    if type(data.tabs) == "table" then
+        for _, item in ipairs(data.tabs) do
+            if #tabs >= MAX_TABS then break end
+            if type(item)=="table" and type(item.name)=="string" and type(item.source)=="string" then
+                table.insert(tabs, {id=tonumber(item.id) or (#tabs+1),
+                    name=item.name:sub(1,40), source=item.source:sub(1,200000)})
             end
+        end
+    end
+    if type(data.library)=="table" then
+        for _, item in ipairs(data.library) do
+            if type(item)=="table" and type(item.name)=="string" and type(item.source)=="string" then
+                table.insert(library, {name=item.name:sub(1,60), source=item.source:sub(1,200000)})
+                if #library >= 100 then break end
+            end
+        end
+    end
+    if ACCENTS[data.accent] then currentTheme=data.accent; accent=ACCENTS[data.accent] end
+    if type(data.fontSize)=="number" then fontSize=math.clamp(data.fontSize,11,19) end
+    if type(data.syntax)=="boolean" then syntaxEnabled=data.syntax end
+    if type(data.animations)=="boolean" then animationsEnabled=data.animations end
+    if type(data.nextId)=="number" then nextId=math.clamp(data.nextId,1,99999) end
+    activeIndex = math.clamp(tonumber(data.activeIndex) or 1, 1, math.max(1,#tabs))
+end
+loadWorkspace()
+if #tabs == 0 then
+    tabs[1] = {id=nextId, name="Untitled 1", source=DEFAULT_CODE}
+    nextId += 1
+end
+
+-- Mount directly in CoreGui; use gethui() only as a fallback.
+local existing = CoreGui:FindFirstChild(ROOT_NAME)
+if existing then existing:Destroy() end
+screen = new("ScreenGui", nil, {Name=ROOT_NAME, ResetOnSpawn=false,
+    DisplayOrder=999, IgnoreGuiInset=true, ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
+local attached = pcall(function() screen.Parent = CoreGui end)
+if not attached and type(gethui)=="function" then
+    local ok,container=pcall(gethui)
+    if ok and typeof(container)=="Instance" then
+        local prior=container:FindFirstChild(ROOT_NAME)
+        if prior then prior:Destroy() end
+        attached=pcall(function() screen.Parent=container end)
+    end
+end
+if not attached then error("Aether: unable to mount CoreGui (executor permission needed)") end
+screen.Destroying:Connect(function()
+    for _, connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
+end)
+
+local backdrop = new("Frame", screen, {Name="Shade",BackgroundColor3=P.backdrop,
+    BackgroundTransparency=.42,BorderSizePixel=0,Size=UDim2.fromScale(1,1),Visible=false})
+main = new("Frame", screen, {Name="AetherWindow",AnchorPoint=Vector2.new(.5,.5),
+    Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(740,480),
+    BackgroundColor3=P.base,BorderSizePixel=0,ClipsDescendants=true})
+corner(main, 17)
+stroke(main, P.border, .02)
+local topAccent = new("Frame",main,{Name="TopAccent",BackgroundColor3=accent,
+    BorderSizePixel=0,Size=UDim2.new(1,0,0,2),ZIndex=5})
+gradient(topAccent,accent,accent:Lerp(P.pane,.85),0)
+table.insert(accentItems,{obj=topAccent,prop="BackgroundColor3"})
+mainScale = new("UIScale", main, {Scale=1})
+local rootGradient = gradient(main, P.base, Color3.fromRGB(16,22,31), 90)
+local rail = new("Frame", main, {Name="SideNavigation",BackgroundColor3=P.rail,
+    BorderSizePixel=0,Size=UDim2.new(0,66,1,0)})
+new("Frame", rail, {BackgroundColor3=P.border,BackgroundTransparency=.35,BorderSizePixel=0,
+    Size=UDim2.new(0,1,1,0),Position=UDim2.new(1,-1,0,0)})
+local brandMark = pane(rail, {Name="Brand",Size=UDim2.fromOffset(38,38),Position=UDim2.fromOffset(14,15),
+    BackgroundColor3=accent}, 11)
+gradient(brandMark, accent, accent:Lerp(Color3.new(0,0,0), .35), 45)
+local mark = label(brandMark, "A", 19, P.backdrop, true,
+    {Size=UDim2.fromScale(1,1),TextXAlignment=Enum.TextXAlignment.Center})
+table.insert(accentItems, {obj=brandMark,prop="BackgroundColor3"})
+local navArea = new("Frame", rail, {BackgroundTransparency=1,Position=UDim2.fromOffset(0,82),
+    Size=UDim2.new(1,0,1,-132)})
+new("UIListLayout", navArea, {Padding=UDim.new(0,6),HorizontalAlignment=Enum.HorizontalAlignment.Center,
+    SortOrder=Enum.SortOrder.LayoutOrder})
+local sidebarVersion = label(rail,"v2.0",10,P.faint,false,
+    {Position=UDim2.new(0,0,1,-36),Size=UDim2.new(1,0,0,20),TextXAlignment=Enum.TextXAlignment.Center})
+
+local body = new("Frame", main, {BackgroundTransparency=1,
+    Position=UDim2.fromOffset(66,0),Size=UDim2.new(1,-66,1,0)})
+local top = new("Frame", body, {BackgroundTransparency=1,Size=UDim2.new(1,0,0,62)})
+local title = label(top, "AETHER", 16, P.text, true,
+    {Position=UDim2.fromOffset(18,11),Size=UDim2.new(1,-170,0,25)})
+local subtitle = label(top, "SCRIPT WORKSPACE   /   MOBILE", 9, P.faint, true,
+    {Position=UDim2.fromOffset(18,35),Size=UDim2.new(1,-130,0,14)})
+new("Frame", top,{BackgroundColor3=P.border,BorderSizePixel=0,
+    Position=UDim2.new(0,0,1,-1),Size=UDim2.new(1,0,0,1)})
+local minimize = button(top,"−",{Position=UDim2.new(1,-91,0,15),Size=UDim2.fromOffset(30,30),TextSize=21})
+local close = button(top,"×",{Position=UDim2.new(1,-51,0,15),Size=UDim2.fromOffset(30,30),TextSize=19})
+
+-- Floating, draggable launch button independent of the window's scale.
+orb = button(screen,"A",{Name="FloatingLauncher",AnchorPoint=Vector2.new(.5,.5),
+    Position=UDim2.new(1,-37,.47,0),Size=UDim2.fromOffset(52,52),TextSize=21},"accent")
+corner(orb,17)
+stroke(orb, P.text, .70)
+orb.Visible = false
+
+local pagesRoot = new("Frame", body,{BackgroundTransparency=1,Position=UDim2.fromOffset(0,62),
+    Size=UDim2.new(1,0,1,-62),ClipsDescendants=true})
+for _, name in ipairs({"Editor","Library","Discover","Console","Settings"}) do
+    pageItems[name] = new("Frame", pagesRoot,{Name=name,BackgroundTransparency=1,
+        Size=UDim2.fromScale(1,1),Visible=name=="Editor"})
+end
+local function navButton(name, glyph, index)
+    local b = button(navArea,"",{Name=name,Size=UDim2.fromOffset(55,59),LayoutOrder=index,
+        BackgroundTransparency=1})
+    corner(b,11)
+    local sideGlow = new("Frame",b,{BackgroundColor3=accent,BorderSizePixel=0,
+        Size=UDim2.fromOffset(3,24),Position=UDim2.fromOffset(0,17),Visible=false})
+    corner(sideGlow,3)
+    table.insert(accentItems,{obj=sideGlow,prop="BackgroundColor3"})
+    local ico = label(b,glyph,18,P.muted,true,{Size=UDim2.new(1,0,0,32),
+        Position=UDim2.fromOffset(0,4),TextXAlignment=Enum.TextXAlignment.Center})
+    local caption = label(b,name:upper(),8,P.faint,true,
+        {Position=UDim2.fromOffset(0,37),Size=UDim2.new(1,0,0,12),TextXAlignment=Enum.TextXAlignment.Center})
+    navItems[name]={button=b,icon=ico,caption=caption,strip=sideGlow}
+    b.Activated:Connect(function() showPage(name) end)
+end
+navButton("Editor","</>",1)
+navButton("Library","▤",2)
+navButton("Discover","⌕",3)
+navButton("Console",">_",4)
+navButton("Settings","⚙",5)
+showPage = function(name)
+    if not pageItems[name] then return end
+    activePage = name
+    for page, frame in pairs(pageItems) do frame.Visible = page == name end
+    for page, controls in pairs(navItems) do
+        local chosen = page == name
+        controls.strip.Visible=chosen
+        animate(controls.button,{BackgroundTransparency=chosen and 0 or 1,
+            BackgroundColor3=chosen and P.raised or P.rail},.16)
+        controls.icon.TextColor3=chosen and accent or P.muted
+        controls.caption.TextColor3=chosen and P.text or P.faint
+    end
+    subtitle.Text=(name:upper().."   /   MOBILE WORKSPACE")
+end
+
+-- Lightweight notifications; no blocking popups for routine actions.
+local toast = pane(screen, {Name="Toast",AnchorPoint=Vector2.new(.5,0),
+    Position=UDim2.new(.5,0,0,-76),Size=UDim2.fromOffset(270,47),
+    BackgroundColor3=P.raised,ZIndex=60}, 12)
+toastLabel = label(toast,"",12,P.text,true,
+    {Position=UDim2.fromOffset(15,0),Size=UDim2.new(1,-25,1,0),ZIndex=61,
+    TextTruncate=Enum.TextTruncate.AtEnd})
+notify = function(message)
+    toastVersion += 1
+    local v=toastVersion
+    toastLabel.Text=tostring(message)
+    animate(toast,{Position=UDim2.new(.5,0,0,18)},.24)
+    task.delay(2.35,function()
+        if toastVersion==v and toast.Parent then
+            animate(toast,{Position=UDim2.new(.5,0,0,-76)},.26)
+        end
+    end)
+end
+
+--[[ EDITOR -- Hydrogen layout + Basalt's multiple files/tabs. ]]
+local editorPage = pageItems.Editor
+local tabbar = new("Frame",editorPage,{BackgroundTransparency=1,Size=UDim2.new(1,0,0,46)})
+tabStrip = new("ScrollingFrame",tabbar,{Name="OpenScripts",Active=true,
+    BackgroundTransparency=1,BorderSizePixel=0,Position=UDim2.fromOffset(12,5),
+    Size=UDim2.new(1,-57,0,36),ScrollBarThickness=0,CanvasSize=UDim2.fromOffset(0,0),
+    ScrollingDirection=Enum.ScrollingDirection.X})
+tabLayout = new("UIListLayout",tabStrip,{FillDirection=Enum.FillDirection.Horizontal,
+    SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,6)})
+tabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    tabStrip.CanvasSize=UDim2.fromOffset(tabLayout.AbsoluteContentSize.X+8,0)
+end)
+local newTabButton=button(tabbar,"+",{Position=UDim2.new(1,-43,0,6),Size=UDim2.fromOffset(31,31),TextSize=21})
+local infoBar = new("Frame",editorPage,{BackgroundTransparency=1,
+    Position=UDim2.fromOffset(12,45),Size=UDim2.new(1,-24,0,34)})
+local activeDot = new("Frame",infoBar,{BackgroundColor3=P.green,BorderSizePixel=0,
+    Position=UDim2.fromOffset(2,13),Size=UDim2.fromOffset(7,7)})
+corner(activeDot,4)
+lineInfo = label(infoBar,"1 line",11,P.muted,false,
+    {Position=UDim2.fromOffset(17,1),Size=UDim2.fromOffset(100,30)})
+byteInfo = label(infoBar,"0 chars",11,P.faint,false,
+    {Position=UDim2.fromOffset(104,1),Size=UDim2.fromOffset(100,30)})
+statusInfo = label(infoBar,"LUAU",10,P.faint,true,
+    {Position=UDim2.new(1,-92,0,1),Size=UDim2.fromOffset(90,30),TextXAlignment=Enum.TextXAlignment.Right})
+local codeSurface = pane(editorPage,{Name="CodeSurface",Position=UDim2.fromOffset(12,80),
+    Size=UDim2.new(1,-24,1,-151),BackgroundColor3=P.backdrop,ClipsDescendants=true},12)
+local codeHeader = new("Frame",codeSurface,{BackgroundColor3=P.pane,BorderSizePixel=0,
+    Size=UDim2.new(1,0,0,29)})
+label(codeHeader,"  ●    code.luau",10,P.muted,true,{Size=UDim2.new(1,-14,1,0)})
+new("Frame",codeHeader,{BackgroundColor3=P.border,BorderSizePixel=0,
+    Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1)})
+editorScroll = new("ScrollingFrame",codeSurface,{Name="CodeScroll",BackgroundTransparency=1,
+    Position=UDim2.fromOffset(0,29),Size=UDim2.new(1,0,1,-29),
+    BorderSizePixel=0,Active=true,CanvasSize=UDim2.new(),
+    ScrollingDirection=Enum.ScrollingDirection.XY,ScrollBarThickness=3,
+    ScrollBarImageColor3=P.faint,ScrollBarImageTransparency=.4})
+local gutter = new("Frame",editorScroll,{Name="LineNumbers",BackgroundColor3=P.rail,
+    BorderSizePixel=0,Position=UDim2.fromOffset(0,0),Size=UDim2.fromOffset(47,100)})
+new("Frame",gutter,{BackgroundColor3=P.border,BorderSizePixel=0,
+    Position=UDim2.new(1,-1,0,0),Size=UDim2.new(0,1,1,0)})
+lineLabel=label(gutter,"1",fontSize,P.faint,false,
+    {Font=Enum.Font.Code,Position=UDim2.fromOffset(5,10),Size=UDim2.new(1,-14,1,-12),
+    TextXAlignment=Enum.TextXAlignment.Right,TextYAlignment=Enum.TextYAlignment.Top})
+lineLabel.Font=Enum.Font.Code
+syntaxLabel=label(editorScroll,"",fontSize,P.text,false,
+    {Name="SyntaxColours",Position=UDim2.fromOffset(59,10),
+    TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,
+    RichText=true,TextWrapped=false,ZIndex=1})
+syntaxLabel.Font=Enum.Font.Code
+codeBox = new("TextBox",editorScroll,{Name="LuauEditor",BackgroundTransparency=1,
+    BorderSizePixel=0,Position=UDim2.fromOffset(59,10),
+    Size=UDim2.fromOffset(650,320),Text=DEFAULT_CODE,
+    ClearTextOnFocus=false,MultiLine=true,TextWrapped=false,
+    TextEditable=true,TextXAlignment=Enum.TextXAlignment.Left,
+    TextYAlignment=Enum.TextYAlignment.Top,TextColor3=P.text,
+    PlaceholderColor3=P.faint,PlaceholderText="-- Enter your Luau code here...",
+    Font=Enum.Font.Code,TextSize=fontSize,ZIndex=2})
+local actionBar = new("Frame",editorPage,{BackgroundTransparency=1,
+    Position=UDim2.new(0,12,1,-64),Size=UDim2.new(1,-24,0,54)})
+local actionLayout=new("UIListLayout",actionBar,{FillDirection=Enum.FillDirection.Horizontal,
+    HorizontalAlignment=Enum.HorizontalAlignment.Center,
+    VerticalAlignment=Enum.VerticalAlignment.Center,
+    Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
+local runButton=button(actionBar,"▶  EXECUTE",{Name="Run",Size=UDim2.fromOffset(109,41),LayoutOrder=1,TextSize=11},"accent")
+local saveButton=button(actionBar,"SAVE",{Name="Save",Size=UDim2.fromOffset(65,41),LayoutOrder=2,TextSize=10})
+local pasteButton=button(actionBar,"PASTE",{Name="Paste",Size=UDim2.fromOffset(65,41),LayoutOrder=3,TextSize=10})
+local copyButton=button(actionBar,"COPY",{Name="Copy",Size=UDim2.fromOffset(65,41),LayoutOrder=4,TextSize=10})
+local clearButton=button(actionBar,"CLEAR",{Name="Clear",Size=UDim2.fromOffset(65,41),LayoutOrder=5,TextSize=10})
+
+local keywords = {}
+for word in string.gmatch("and break do else elseif end false for function if in local nil not or repeat return then true until while continue self", "%S+") do keywords[word]=true end
+local function xml(s)
+    local escaped=s:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;")
+    return escaped
+end
+local function tint(source, col)
+    return '<font color="'..col..'">'..xml(source)..'</font>'
+end
+local function syntaxHighlight(src)
+    if #src>13000 then return xml(src) end
+    local out={}
+    local i,n=1,#src
+    while i<=n do
+        local ch=src:sub(i,i)
+        local nxt=src:sub(i+1,i+1)
+        if ch=="-" and nxt=="-" then
+            local k=src:find("\n",i,true) or (n+1)
+            table.insert(out,tint(src:sub(i,k-1),"#7B899A")); i=k
+        elseif ch=='"' or ch=="'" then
+            local j=i+1
+            while j<=n do
+                local c=src:sub(j,j)
+                if c=="\\" then j+=2
+                elseif c==ch then j+=1; break
+                else j+=1 end
+            end
+            table.insert(out,tint(src:sub(i,j-1),"#A8E6BB")); i=j
+        elseif ch:match("[%a_]") then
+            local j=i+1
+            while j<=n and src:sub(j,j):match("[%w_]") do j+=1 end
+            local word=src:sub(i,j-1)
+            table.insert(out, keywords[word] and tint(word,"#B9A0FB") or xml(word))
+            i=j
+        elseif ch:match("%d") then
+            local j=i+1
+            while j<=n and src:sub(j,j):match("[%w%.]") do j+=1 end
+            table.insert(out,tint(src:sub(i,j-1),"#F9C67E")); i=j
+        else
+            table.insert(out,xml(ch)); i+=1
+        end
+    end
+    return table.concat(out)
+end
+local lastSource, lastW, lastH = "", 0, 0
+refreshCodeGeometry = function()
+    if not editorScroll then return end
+    local text=codeBox.Text
+    local lineCount,maxWidth,curWidth=1,0,0
+    for k=1,#text do
+        local c=text:sub(k,k)
+        if c=="\n" then
+            lineCount+=1; maxWidth=math.max(maxWidth,curWidth); curWidth=0
+        elseif c=="\t" then curWidth+=4
+        else curWidth+=1 end
+    end
+    maxWidth=math.max(maxWidth,curWidth)
+    local lineHeight=math.floor(fontSize*1.22+1)
+    local w=math.max(editorScroll.AbsoluteSize.X,math.ceil(70+maxWidth*fontSize*.65+50))
+    local h=math.max(editorScroll.AbsoluteSize.Y,math.ceil(23+lineCount*lineHeight+30))
+    if lastW~=w or lastH~=h then
+        editorScroll.CanvasSize=UDim2.fromOffset(w,h)
+        gutter.Size=UDim2.fromOffset(47,h)
+        codeBox.Size=UDim2.fromOffset(math.max(w-70,200),h-20)
+        syntaxLabel.Size=codeBox.Size
+        lastW,lastH=w,h
+    end
+    lineLabel.Size=UDim2.fromOffset(33,h-18)
+    local nums={}
+    for k=1,math.min(lineCount,2000) do nums[k]=tostring(k) end
+    lineLabel.Text=table.concat(nums,"\n")
+    lineInfo.Text=tostring(lineCount)..(lineCount==1 and " line" or " lines")
+    byteInfo.Text=tostring(#text).." chars"
+    lineLabel.TextSize=fontSize
+    codeBox.TextSize=fontSize
+    syntaxLabel.TextSize=fontSize
+    if syntaxEnabled then
+        syntaxLabel.Text=syntaxHighlight(text)
+        syntaxLabel.Visible=true
+        codeBox.TextTransparency=.95
+    else
+        syntaxLabel.Visible=false
+        codeBox.TextTransparency=0
+    end
+end
+
+local isChangingTab=false
+updateEditor = function()
+    isChangingTab=true
+    local t=tabs[activeIndex]
+    codeBox.Text=t and t.source or ""
+    isChangingTab=false
+    refreshCodeGeometry()
+    renderTabs()
+end
+track(codeBox:GetPropertyChangedSignal("Text"):Connect(function()
+    if not isChangingTab then
+        local t=tabs[activeIndex]
+        if t then t.source=codeBox.Text; scheduleSave() end
+    end
+    refreshCodeGeometry()
+end))
+track(editorScroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    lastW,lastH=0,0
+    refreshCodeGeometry()
+end))
+
+renderTabs = function()
+    for _, child in ipairs(tabStrip:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+    for index, t in ipairs(tabs) do
+        local active=index==activeIndex
+        local width=math.clamp(#t.name*6+46,110,163)
+        local entry=button(tabStrip,"",{Name="Tab_"..tostring(t.id),LayoutOrder=index,
+            Size=UDim2.fromOffset(width,32),BackgroundColor3=active and P.raised or P.rail})
+        entry.BackgroundColor3=active and P.raised or P.rail
+        if active then stroke(entry,accent,.28,1) end
+        local filename=label(entry,t.name,11,active and P.text or P.muted,active,
+            {Position=UDim2.fromOffset(11,0),Size=UDim2.new(1,-36,1,0),
+            TextTruncate=Enum.TextTruncate.AtEnd})
+        local x=button(entry,"×",{Position=UDim2.new(1,-26,0,5),Size=UDim2.fromOffset(22,22),
+            TextSize=14,BackgroundTransparency=1})
+        x.BackgroundTransparency=1
+        entry.Activated:Connect(function()
+            activeIndex=index
+            updateEditor(); scheduleSave()
+        end)
+        x.Activated:Connect(function()
+            if #tabs==1 then
+                tabs[1].source=""; tabs[1].name="Untitled"; activeIndex=1
+            else
+                table.remove(tabs,index)
+                if activeIndex>index then activeIndex-=1 end
+                activeIndex=math.clamp(activeIndex,1,#tabs)
+            end
+            updateEditor(); scheduleSave()
         end)
     end
 end
+local function newTab(name,source)
+    if #tabs>=MAX_TABS then notify("Maximum 12 tabs reached"); return false end
+    local t={id=nextId,name=name or ("Untitled "..tostring(nextId)),source=source or ""}
+    nextId+=1
+    table.insert(tabs,t)
+    activeIndex=#tabs
+    showPage("Editor")
+    updateEditor(); scheduleSave()
+    return true
+end
+newTabButton.Activated:Connect(function() newTab() end)
 
-rebuildScriptLibrary = function()
-    for _, child in ipairs(scriptScroll:GetChildren()) do
+-- Shared modal: save / rename / delete confirmations.
+local modalCover=new("Frame",screen,{BackgroundColor3=P.backdrop,BackgroundTransparency=.30,
+    BorderSizePixel=0,Size=UDim2.fromScale(1,1),Visible=false,Active=true,ZIndex=80})
+local dialog=pane(modalCover,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
+    Size=UDim2.fromOffset(330,208),BackgroundColor3=P.pane,ZIndex=81},15)
+local dialogScale = new("UIScale",dialog,{Scale=1})
+modalTitle=label(dialog,"Save script",17,P.text,true,
+    {Position=UDim2.fromOffset(19,14),Size=UDim2.new(1,-38,0,27),ZIndex=82})
+modalHint=label(dialog,"Choose a name for your saved script.",11,P.muted,false,
+    {Position=UDim2.fromOffset(19,44),Size=UDim2.new(1,-38,0,27),ZIndex=82,TextWrapped=true})
+modalField=new("TextBox",dialog,{BackgroundColor3=P.raised,BorderSizePixel=0,
+    Position=UDim2.fromOffset(19,84),Size=UDim2.new(1,-38,0,39),
+    ClearTextOnFocus=false,Text="",PlaceholderText="Script name",
+    Font=Enum.Font.Gotham,TextSize=13,TextColor3=P.text,PlaceholderColor3=P.faint,
+    ZIndex=82})
+corner(modalField,9); stroke(modalField,P.border,.35)
+modalCancel=button(dialog,"CANCEL",{Position=UDim2.new(0,19,1,-57),
+    Size=UDim2.fromOffset(127,39),ZIndex=82})
+modalAction=button(dialog,"SAVE",{Position=UDim2.new(1,-146,1,-57),
+    Size=UDim2.fromOffset(127,39),ZIndex=82},"accent")
+local modalCallback=nil
+local function hideModal()
+    modalCover.Visible=false; modalCallback=nil
+end
+modalCancel.Activated:Connect(hideModal)
+modalAction.Activated:Connect(function()
+    local callback=modalCallback
+    if callback then callback(modalField.Text) end
+end)
+local function askModal(heading,hint,initial,action,callback,usesField)
+    modalTitle.Text=heading; modalHint.Text=hint
+    modalField.Text=initial or ""
+    modalField.Visible=usesField~=false
+    modalAction.Text=action
+    modalCover.Visible=true
+    modalCallback=callback
+end
+
+local function currentTab() return tabs[activeIndex] end
+local function saveToLibrary()
+    local t=currentTab()
+    if not t then return end
+    askModal("Save to library","Give this script a name. Your code is retained in the editor.",
+        t.name,"SAVE",function(name)
+            name=name:match("^%s*(.-)%s*$")
+            if name=="" then notify("Enter a script name"); return end
+            name=name:sub(1,58)
+            local found=nil
+            for _, item in ipairs(library) do
+                if item.name==name then found=item; break end
+            end
+            if found then found.source=t.source
+            else table.insert(library,1,{name=name,source=t.source}) end
+            t.name=name; hideModal(); renderTabs(); renderLibrary(); scheduleSave()
+            notify("Saved "..name)
+        end,true)
+end
+saveButton.Activated:Connect(saveToLibrary)
+local function copyText(value)
+    if type(setclipboard)~="function" then notify("Clipboard API is unavailable");return end
+    local ok=pcall(setclipboard,value)
+    notify(ok and "Copied to clipboard" or "Clipboard failed")
+end
+local function pasteText()
+    if type(getclipboard)~="function" then notify("Clipboard API is unavailable");return end
+    local ok,text=pcall(getclipboard)
+    if not ok or type(text)~="string" then notify("Could not read clipboard");return end
+    if #text>180000 then notify("Clipboard text is too large");return end
+    codeBox.Text=text
+    notify("Pasted clipboard text")
+end
+copyButton.Activated:Connect(function()copyText(codeBox.Text)end)
+pasteButton.Activated:Connect(pasteText)
+clearButton.Activated:Connect(function()codeBox.Text="";notify("Editor cleared")end)
+
+--[[ CONSOLE ]]
+local consolePage=pageItems.Console
+local consoleHeader=label(consolePage,"EXECUTION LOG",14,P.text,true,
+    {Position=UDim2.fromOffset(17,12),Size=UDim2.new(1,-180,0,28)})
+local clearLogs=button(consolePage,"CLEAR",{Position=UDim2.new(1,-151,0,10),Size=UDim2.fromOffset(64,33)})
+local copyLogs=button(consolePage,"COPY",{Position=UDim2.new(1,-79,0,10),Size=UDim2.fromOffset(64,33)})
+local consoleWrap=pane(consolePage,{Position=UDim2.fromOffset(12,55),Size=UDim2.new(1,-24,1,-67),
+    BackgroundColor3=P.backdrop,ClipsDescendants=true},11)
+consoleScroll=new("ScrollingFrame",consoleWrap,{BackgroundTransparency=1,
+    Position=UDim2.fromOffset(8,8),Size=UDim2.new(1,-16,1,-16),CanvasSize=UDim2.new(),
+    ScrollBarThickness=3,ScrollBarImageColor3=P.muted,BorderSizePixel=0})
+consoleLayout=new("UIListLayout",consoleScroll,{Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
+consoleLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    consoleScroll.CanvasSize=UDim2.fromOffset(0,consoleLayout.AbsoluteContentSize.Y+10)
+    task.defer(function()
+        if consoleScroll.Parent then
+            consoleScroll.CanvasPosition=Vector2.new(0,math.max(0,consoleLayout.AbsoluteContentSize.Y-consoleScroll.AbsoluteSize.Y+16))
+        end
+    end)
+end)
+local function logColor(level)
+    return level=="ERROR" and P.error or (level=="WARN" and P.warn or
+        (level=="RUN" and accent or (level=="PRINT" and P.green or P.muted)))
+end
+addLog=function(level,message)
+    message=tostring(message)
+    local time=os.date("%H:%M:%S")
+    local item={kind=level,msg=message,time=time}
+    table.insert(logs,item)
+    if #logs>100 then table.remove(logs,1) end
+    if not consoleScroll then return end
+    local card=pane(consoleScroll,{Name="LogLine",Size=UDim2.new(1,-4,0,40),
+        BackgroundColor3=P.pane,LayoutOrder=#logs},7)
+    local col=logColor(level)
+    local stripe=new("Frame",card,{BackgroundColor3=col,BorderSizePixel=0,
+        Size=UDim2.fromOffset(3,22),Position=UDim2.fromOffset(0,9)})
+    corner(stripe,2)
+    label(card,level,9,col,true,{Position=UDim2.fromOffset(12,4),Size=UDim2.fromOffset(52,18)})
+    label(card,time,9,P.faint,false,{Position=UDim2.new(1,-76,0,4),Size=UDim2.fromOffset(68,18),
+        TextXAlignment=Enum.TextXAlignment.Right})
+    local content=label(card,message,11,P.text,false,
+        {Position=UDim2.fromOffset(12,22),Size=UDim2.new(1,-24,0,16),
+        TextWrapped=true,TextYAlignment=Enum.TextYAlignment.Top})
+    local estimated=math.max(1,math.ceil(#message/math.max(20,math.floor((consoleScroll.AbsoluteSize.X-38)/6.5))))
+    card.Size=UDim2.new(1,-4,0,math.max(45,28+estimated*14))
+    content.Size=UDim2.new(1,-24,1,-24)
+    local children={}
+    for _, obj in ipairs(consoleScroll:GetChildren()) do
+        if obj.Name=="LogLine" then table.insert(children,obj) end
+    end
+    if #children>100 then children[1]:Destroy() end
+end
+clearLogs.Activated:Connect(function()
+    table.clear(logs)
+    for _,obj in ipairs(consoleScroll:GetChildren()) do
+        if obj.Name=="LogLine" then obj:Destroy() end
+    end
+    notify("Console cleared")
+end)
+copyLogs.Activated:Connect(function()
+    local arr={}
+    for _,entry in ipairs(logs) do table.insert(arr,"["..entry.time.."] ["..entry.kind.."] "..entry.msg) end
+    copyText(table.concat(arr,"\n"))
+end)
+
+local function executeCode(source)
+    if not source or source:match("^%s*$") then
+        notify("Editor is empty");return
+    end
+    runCount+=1
+    local thisRun=runCount
+    addLog("RUN","Run #"..thisRun.." started ("..tostring(#source).." bytes)")
+    statusInfo.Text="RUNNING"
+    notify("Executing script #"..thisRun)
+    task.spawn(function()
+        local loader=loadstring
+        if type(loader)=="function" then
+            local ok, chunk, compileError=pcall(loader,source)
+            if not ok then
+                addLog("ERROR","Loader failed: "..tostring(chunk))
+            elseif type(chunk)~="function" then
+                addLog("ERROR",tostring(compileError or "Compilation failed"))
+            else
+                -- Prefer a per-chunk environment, never replace global print/warn.
+                -- Some native executors do not support setfenv on their chunks;
+                -- in those cases, run status and errors still work.
+                if type(getfenv)=="function" and type(setfenv)=="function" then
+                    local okEnv,baseEnv=pcall(getfenv,chunk)
+                    if okEnv and type(baseEnv)=="table" then
+                        local originalPrint=baseEnv.print or print
+                        local originalWarn=baseEnv.warn or warn
+                        local function captured(kind,...)
+                            local parts={}
+                            for i=1,select("#",...) do
+                                local okText,value=pcall(tostring,select(i,...))
+                                parts[i]=okText and value or "<unprintable>"
+                            end
+                            pcall(addLog,kind,table.concat(parts,"  "))
+                        end
+                        local scoped=setmetatable({
+                            print=function(...)
+                                captured("PRINT",...)
+                                return originalPrint(...)
+                            end,
+                            warn=function(...)
+                                captured("WARN",...)
+                                if type(originalWarn)=="function" then return originalWarn(...) end
+                            end,
+                        },{__index=baseEnv,__newindex=baseEnv})
+                        pcall(setfenv,chunk,scoped)
+                    end
+                end
+                local values=table.pack(pcall(chunk))
+                if values[1] then
+                    addLog("INFO","Run #"..thisRun.." returned successfully"..
+                        (values.n>1 and (" | result: "..tostring(values[2])) or ""))
+                else
+                    addLog("ERROR",tostring(values[2]))
+                    showPage("Console")
+                end
+            end
+        else
+            local environment=nil
+            if type(getgenv)=="function" then
+                local ok,env=pcall(getgenv)
+                if ok and type(env)=="table" then environment=env end
+            end
+            local runner=(environment and environment.runcode) or runcode
+            if type(runner)=="function" then
+                local ok,err=pcall(runner,source)
+                addLog(ok and "INFO" or "ERROR",ok and "Script sent to executor backend" or tostring(err))
+            else
+                addLog("ERROR","No loadstring() or runcode() available in this environment")
+                showPage("Console")
+            end
+        end
+        statusInfo.Text="LUAU"
+    end)
+end
+runButton.Activated:Connect(function() executeCode(codeBox.Text) end)
+
+--[[ LIBRARY -- source is always opened for review, never auto-run. ]]
+local libPage=pageItems.Library
+label(libPage,"SAVED SCRIPTS",14,P.text,true,
+    {Position=UDim2.fromOffset(17,12),Size=UDim2.new(1,-145,0,27)})
+local libSave=button(libPage,"+ SAVE",{Position=UDim2.new(1,-96,0,10),Size=UDim2.fromOffset(82,32)})
+libSave.Activated:Connect(saveToLibrary)
+local searchContainer=pane(libPage,{Position=UDim2.fromOffset(13,53),
+    Size=UDim2.new(1,-26,0,40),BackgroundColor3=P.raised},9)
+librarySearch=new("TextBox",searchContainer,{BackgroundTransparency=1,Text="",
+    Font=Enum.Font.Gotham,TextSize=12,PlaceholderText="Search your saved scripts...",
+    PlaceholderColor3=P.faint,TextColor3=P.text,ClearTextOnFocus=false,
+    Position=UDim2.fromOffset(12,0),Size=UDim2.new(1,-24,1,0),TextXAlignment=Enum.TextXAlignment.Left})
+libraryScroll=new("ScrollingFrame",libPage,{BackgroundTransparency=1,BorderSizePixel=0,
+    Position=UDim2.fromOffset(12,103),Size=UDim2.new(1,-24,1,-114),
+    ScrollBarThickness=3,ScrollBarImageColor3=P.faint,CanvasSize=UDim2.new()})
+libraryLayout=new("UIListLayout",libraryScroll,{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder})
+libraryLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    libraryScroll.CanvasSize=UDim2.fromOffset(0,libraryLayout.AbsoluteContentSize.Y+6)
+end)
+renderLibrary=function()
+    if not libraryScroll then return end
+    for _,child in ipairs(libraryScroll:GetChildren()) do
+        if child:IsA("Frame") or child:IsA("TextLabel") then child:Destroy() end
+    end
+    local query=(librarySearch and librarySearch.Text or ""):lower()
+    local shown=0
+    for index,item in ipairs(library) do
+        if query=="" or item.name:lower():find(query,1,true) then
+            shown+=1
+            local card=pane(libraryScroll,{Size=UDim2.new(1,-3,0,73),LayoutOrder=index,
+                BackgroundColor3=P.pane},10)
+            local titleLabel=label(card,item.name,12,P.text,true,
+                {Position=UDim2.fromOffset(12,7),Size=UDim2.new(1,-190,0,26),
+                TextTruncate=Enum.TextTruncate.AtEnd})
+            label(card,tostring(#item.source).." chars  •  saved script",10,P.muted,false,
+                {Position=UDim2.fromOffset(12,36),Size=UDim2.new(1,-177,0,19)})
+            local open=button(card,"OPEN",{Position=UDim2.new(1,-149,0,19),Size=UDim2.fromOffset(69,34)},"accent")
+            local del=button(card,"×",{Position=UDim2.new(1,-72,0,19),Size=UDim2.fromOffset(58,34),TextSize=18})
+            open.Activated:Connect(function()
+                if newTab(item.name,item.source) then notify("Opened "..item.name) end
+            end)
+            del.Activated:Connect(function()
+                askModal("Delete script?","Remove '"..item.name.."' from your saved library?",
+                    "","DELETE",function()
+                        table.remove(library,index)
+                        hideModal();renderLibrary();scheduleSave();notify("Script deleted")
+                    end,false)
+            end)
+        end
+    end
+    if shown==0 then
+        label(libraryScroll,#library==0 and "No saved scripts yet. Save one from the editor." or "No matching scripts.",
+            12,P.muted,false,{Size=UDim2.new(1,0,0,58),TextXAlignment=Enum.TextXAlignment.Center})
+    end
+end
+librarySearch:GetPropertyChangedSignal("Text"):Connect(renderLibrary)
+
+--[[ DISCOVER -- Basalt-style ScriptBlox explorer; LOAD for review, not auto-run. ]]
+local discover=pageItems.Discover
+label(discover,"SCRIPT EXPLORER",14,P.text,true,
+    {Position=UDim2.fromOffset(17,10),Size=UDim2.new(1,-26,0,29)})
+label(discover,"Search ScriptBlox and inspect source before execution",10,P.muted,false,
+    {Position=UDim2.fromOffset(17,33),Size=UDim2.new(1,-26,0,20),TextTruncate=Enum.TextTruncate.AtEnd})
+local searchRow=pane(discover,{Position=UDim2.fromOffset(12,66),Size=UDim2.new(1,-24,0,43),
+    BackgroundColor3=P.raised},10)
+searchInput=new("TextBox",searchRow,{BackgroundTransparency=1,Text="",
+    PlaceholderText="Search scripts...",PlaceholderColor3=P.faint,
+    ClearTextOnFocus=false,Font=Enum.Font.Gotham,TextSize=12,
+    TextColor3=P.text,TextXAlignment=Enum.TextXAlignment.Left,
+    Position=UDim2.fromOffset(13,0),Size=UDim2.new(1,-106,1,0)})
+local searchButton=button(searchRow,"SEARCH",{Position=UDim2.new(1,-89,0,5),Size=UDim2.fromOffset(83,33)},"accent")
+resultInfo=label(discover,"Enter a search to browse public scripts.",11,P.faint,false,
+    {Position=UDim2.fromOffset(17,117),Size=UDim2.new(1,-30,0,25)})
+resultScroll=new("ScrollingFrame",discover,{BackgroundTransparency=1,
+    Position=UDim2.fromOffset(12,146),Size=UDim2.new(1,-24,1,-160),
+    BorderSizePixel=0,CanvasSize=UDim2.new(),ScrollBarThickness=3,
+    ScrollBarImageColor3=P.muted})
+resultLayout=new("UIListLayout",resultScroll,{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder})
+resultLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    resultScroll.CanvasSize=UDim2.fromOffset(0,resultLayout.AbsoluteContentSize.Y+8)
+end)
+local function getResponse(url)
+    local requester=request or http_request or (type(syn)=="table" and syn.request)
+    if type(requester)=="function" then
+        local ok,res=pcall(requester,{Url=url,Method="GET",Headers={Accept="application/json"}})
+        if ok and type(res)=="table" and type(res.Body)=="string" then
+            if res.StatusCode and tonumber(res.StatusCode)>=400 then return nil,"HTTP "..tostring(res.StatusCode) end
+            return res.Body
+        end
+    end
+    local ok,body=pcall(function()return game:HttpGet(url)end)
+    if ok and type(body)=="string" then return body end
+    return nil,"HTTP requests are not supported"
+end
+local searchSerial=0
+local function searchScripts()
+    local q=searchInput.Text:match("^%s*(.-)%s*$")
+    if q=="" then notify("Enter a search query");return end
+    searchSerial+=1
+    local serial=searchSerial
+    resultInfo.Text="Searching ScriptBlox..."
+    for _,child in ipairs(resultScroll:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
-    for i, entry in ipairs(saved) do scriptCard(entry, true, i) end
-    for i, entry in ipairs(examples) do
-        scriptCard(entry, false, #saved + i)
-    end
-end
-loadSaved()
-rebuildScriptLibrary()
-
--- SETTINGS -----------------------------------------------------------------
-local settingsPage = pages.Settings
-sectionHeading(settingsPage, "PREFERENCES", "Personalize the workspace")
-
-local accentCard = new("Frame", {
-    Position = UDim2.fromOffset(0, 54),
-    Size = UDim2.new(1, 0, 0, 112),
-    BackgroundColor3 = C.surface,
-    BorderSizePixel = 0,
-}, settingsPage)
-round(accentCard, 13)
-label(accentCard, "ACCENT COLOR", 12, C.white, true,
-    UDim2.fromOffset(15, 10), UDim2.new(1, -30, 0, 26))
-
-local function setAccent(color)
-    accent = color
-    for _, item in ipairs(accentTargets) do
-        if item.obj.Parent then
-            buttonColors[item.obj] = color
-            tween(item.obj, {[item.property] = color}, 0.22)
+    task.spawn(function()
+        local url="https://scriptblox.com/api/script/search?q="..HttpService:UrlEncode(q).."&max=20&mode=free"
+        local body,err=getResponse(url)
+        if serial~=searchSerial then return end
+        if not body then resultInfo.Text="Search unavailable: "..tostring(err);addLog("WARN",resultInfo.Text);return end
+        local data=jsonDecode(body)
+        local scripts=data and data.result and data.result.scripts
+        if type(scripts)~="table" then resultInfo.Text="No readable ScriptBlox results";return end
+        resultInfo.Text=tostring(#scripts).." scripts found — tap LOAD to inspect code"
+        for index,entry in ipairs(scripts) do
+            local name=tostring(entry.title or "Untitled Script"):sub(1,80)
+            local source=entry.script
+            local isUsable=type(source)=="string" and #source>0 and #source<200000
+            local card=pane(resultScroll,{Size=UDim2.new(1,-3,0,83),LayoutOrder=index},10)
+            label(card,name,12,P.text,true,
+                {Position=UDim2.fromOffset(12,8),Size=UDim2.new(1,-105,0,29),
+                TextTruncate=Enum.TextTruncate.AtEnd})
+            local meta=tostring(entry.game and entry.game.name or "Community script")
+            label(card,meta:sub(1,66),10,P.muted,false,
+                {Position=UDim2.fromOffset(12,40),Size=UDim2.new(1,-107,0,23),
+                TextTruncate=Enum.TextTruncate.AtEnd})
+            local load=button(card,isUsable and "LOAD" or "N/A",{
+                Position=UDim2.new(1,-89,0,23),Size=UDim2.fromOffset(75,35)},isUsable and "accent" or nil)
+            load.Activated:Connect(function()
+                if not isUsable then notify("No source available for this script");return end
+                if newTab(name,source) then notify("Source loaded for review") end
+            end)
         end
-    end
-    scriptScroll.ScrollBarImageColor3 = color
-    consoleScroll.ScrollBarImageColor3 = color
-    for _, child in ipairs(scriptScroll:GetDescendants()) do
-        if child:IsA("TextButton") and child.Text == "RUN" then
-            buttonColors[child] = color
-            tween(child, {BackgroundColor3 = color}, 0.22)
-        end
-    end
-    setPage(selectedPage)
-end
-
-for i, option in ipairs({
-    {"VIOLET", Color3.fromRGB(151, 117, 255)},
-    {"CYAN", Color3.fromRGB(91, 206, 245)},
-    {"MINT", Color3.fromRGB(103, 230, 179)},
-}) do
-    local swatch = button(accentCard, option[1], UDim2.new((i - 1) / 3, 12, 0, 55),
-        UDim2.new(1 / 3, -19, 0, 41), option[2], C.backdrop, 10)
-    swatch.Activated:Connect(function() setAccent(option[2]) end)
-end
-
-local aboutCard = new("Frame", {
-    Position = UDim2.fromOffset(0, 177),
-    Size = UDim2.new(1, 0, 0, 152),
-    BackgroundColor3 = C.surface,
-    BorderSizePixel = 0,
-}, settingsPage)
-round(aboutCard, 13)
-label(aboutCard, "SYSTEM STATUS", 12, C.white, true,
-    UDim2.fromOffset(15, 11), UDim2.new(1, -30, 0, 25))
-local lines = {
-    "Script runtime", "Saved script storage", "Clipboard support", "Interface host",
-}
-local values = {
-    type(loadstring) == "function" and "AVAILABLE" or "UNAVAILABLE",
-    type(readfile) == "function" and type(writefile) == "function" and "PERSISTENT" or "THIS SESSION",
-    type(setclipboard) == "function" and "COPY READY" or "NOT AVAILABLE",
-    parentContainer == CoreGui and "COREGUI" or "GETHUI",
-}
-for i = 1, #lines do
-    local y = 36 + (i - 1) * 27
-    label(aboutCard, lines[i], 11, C.muted, false,
-        UDim2.fromOffset(15, y), UDim2.fromOffset(190, 22))
-    local v = label(aboutCard, values[i], 10, C.green, true,
-        UDim2.new(1, -155, 0, y), UDim2.fromOffset(140, 22))
-    v.TextXAlignment = Enum.TextXAlignment.Right
-end
-
--- BOTTOM TOOLBAR -----------------------------------------------------------
-local toolbar = new("Frame", {
-    Position = UDim2.new(0, 15, 1, -76),
-    Size = UDim2.new(1, -30, 0, 59),
-    BackgroundColor3 = C.surface,
-    BorderSizePixel = 0,
-}, main)
-round(toolbar, 14)
-outline(toolbar, 0.52)
-
-local execute = button(toolbar, "▶  EXECUTE", UDim2.fromOffset(8, 8),
-    UDim2.new(0.43, -6, 1, -16), accent, C.backdrop, 13)
-decorateAccent(execute)
-local clearEditor = button(toolbar, "CLEAR", UDim2.new(0.43, 5, 0, 8),
-    UDim2.new(0.26, -6, 1, -16), C.surface2, C.white, 12)
-local saveEditor = button(toolbar, "SAVE", UDim2.new(0.69, 7, 0, 8),
-    UDim2.new(0.31, -15, 1, -16), C.surface2, C.white, 12)
-
-execute.Activated:Connect(function()
-    runSource(codeBox.Text)
-    setPage("Console")
-end)
-clearEditor.Activated:Connect(function()
-    codeBox.Text = ""
-    setPage("Editor")
-    appendLog("Editor cleared.", "info")
-end)
-
-local function savePrompt()
-    if modalOpen then return end
-    modalOpen = true
-    local overlay = new("Frame", {
-        Name = "SaveDialog",
-        Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-        BackgroundTransparency = 0.25,
-        BorderSizePixel = 0,
-        Active = true,
-        ZIndex = 10,
-    }, main)
-    local dialog = new("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.new(1, -74, 0, 199),
-        BackgroundColor3 = C.surface2,
-        BorderSizePixel = 0,
-        ZIndex = 11,
-    }, overlay)
-    round(dialog, 17)
-    outline(dialog, 0)
-    local title = label(dialog, "SAVE SCRIPT", 15, C.white, true,
-        UDim2.fromOffset(18, 12), UDim2.new(1, -30, 0, 28))
-    title.ZIndex = 12
-    local subtitle = label(dialog, "Choose a name for this script", 11, C.muted, false,
-        UDim2.fromOffset(18, 42), UDim2.new(1, -30, 0, 23))
-    subtitle.ZIndex = 12
-    local nameBox = new("TextBox", {
-        Position = UDim2.fromOffset(18, 74),
-        Size = UDim2.new(1, -36, 0, 43),
-        BackgroundColor3 = C.backdrop,
-        TextColor3 = C.white,
-        PlaceholderText = "My Script",
-        PlaceholderColor3 = C.muted,
-        Font = Enum.Font.Gotham,
-        TextSize = 14,
-        Text = "",
-        ClearTextOnFocus = false,
-        ZIndex = 12,
-    }, dialog)
-    round(nameBox, 9)
-    local cancel = button(dialog, "CANCEL", UDim2.new(0, 18, 1, -63),
-        UDim2.new(0.5, -23, 0, 43), C.raised, C.white, 11)
-    local confirm = button(dialog, "SAVE", UDim2.new(0.5, 5, 1, -63),
-        UDim2.new(0.5, -23, 0, 43), accent, C.backdrop, 11)
-    cancel.ZIndex, confirm.ZIndex = 12, 12
-    local function dismiss()
-        modalOpen = false
-        overlay:Destroy()
-    end
-    cancel.Activated:Connect(dismiss)
-    confirm.Activated:Connect(function()
-        local name = nameBox.Text:match("^%s*(.-)%s*$")
-        if name == "" then name = "Untitled" end
-        name = name:sub(1, 40)
-        if codeBox.Text:match("^%s*$") then
-            appendLog("Nothing to save: editor is empty.", "warn")
-            dismiss()
-            return
-        end
-        local overwritten = false
-        for _, item in ipairs(saved) do
-            if item.name == name then
-                item.code = codeBox.Text
-                overwritten = true
-                break
-            end
-        end
-        if not overwritten then
-            if #saved >= 40 then
-                appendLog("Saved-script limit reached (40).", "warn")
-                dismiss()
-                return
-            end
-            table.insert(saved, 1, {name = name, code = codeBox.Text})
-        end
-        local ok = persistSaved()
-        rebuildScriptLibrary()
-        appendLog((overwritten and "Updated " or "Saved ") .. name ..
-            (ok and " to storage." or " for this session."), "success")
-        dismiss()
-        setPage("Scripts")
-    end)
-    task.defer(function()
-        if nameBox.Parent then nameBox:CaptureFocus() end
     end)
 end
-saveEditor.Activated:Connect(savePrompt)
+searchButton.Activated:Connect(searchScripts)
+searchInput.FocusLost:Connect(function(enter) if enter then searchScripts() end end)
 
--- MINIMIZED LAUNCHER -------------------------------------------------------
-local launcher = button(gui, "N", UDim2.new(1, -73, 1, -79),
-    UDim2.fromOffset(56, 56), accent, C.backdrop, 26)
-launcher.Name = "OpenNova"
-launcher.AnchorPoint = Vector2.new(0, 0)
-launcher.Visible = false
-round(launcher, 19)
-decorateAccent(launcher)
-outline(launcher, 0.15, C.white)
-
-minimize.Activated:Connect(function()
-    main.Visible = false
-    launcher.Visible = true
+--[[ SETTINGS ]]
+local settings=pageItems.Settings
+label(settings,"APPEARANCE",14,P.text,true,
+    {Position=UDim2.fromOffset(17,14),Size=UDim2.new(1,-34,0,30)})
+local settingsScroll=new("ScrollingFrame",settings,{BackgroundTransparency=1,
+    Position=UDim2.fromOffset(12,52),Size=UDim2.new(1,-24,1,-64),
+    BorderSizePixel=0,CanvasSize=UDim2.new(),ScrollBarThickness=3,
+    ScrollBarImageColor3=P.faint})
+local settingsLayout=new("UIListLayout",settingsScroll,{Padding=UDim.new(0,10),SortOrder=Enum.SortOrder.LayoutOrder})
+settingsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    settingsScroll.CanvasSize=UDim2.fromOffset(0,settingsLayout.AbsoluteContentSize.Y+12)
 end)
-launcher.Activated:Connect(function()
-    launcher.Visible = false
-    main.Visible = true
-    scale.Scale = targetScale * 0.94
-    tween(scale, {Scale = targetScale}, 0.22)
+local function settingCard(order,name,desc,height)
+    local f=pane(settingsScroll,{Size=UDim2.new(1,-3,0,height or 76),LayoutOrder=order},11)
+    label(f,name,12,P.text,true,{Position=UDim2.fromOffset(13,10),Size=UDim2.new(1,-26,0,23)})
+    label(f,desc,10,P.muted,false,{Position=UDim2.fromOffset(13,32),
+        Size=UDim2.new(1,-26,0,20),TextTruncate=Enum.TextTruncate.AtEnd})
+    return f
+end
+local themeCard=settingCard(1,"Accent colour","Minimal dark UI with subtle accent",112)
+local themes={}
+for i,k in ipairs({"Ice","Mint","Violet"}) do
+    local b=button(themeCard,k:upper(),{Position=UDim2.new((i-1)/3,13+(i-1)*-1,1,-47),
+        Size=UDim2.new(1/3,-17,0,34),TextSize=10})
+    themes[k]=b
+    b.Activated:Connect(function()
+        currentTheme=k;accent=ACCENTS[k];refreshTheme();scheduleSave();notify(k.." theme selected")
+    end)
+end
+local fontCard=settingCard(2,"Editor font size","Change the monospaced code editor scale",86)
+local sizeIndicator=label(fontCard,tostring(fontSize).." px",12,P.text,true,
+    {Position=UDim2.new(1,-130,0,37),Size=UDim2.fromOffset(56,32),TextXAlignment=Enum.TextXAlignment.Center})
+local fontDown=button(fontCard,"−",{Position=UDim2.new(1,-167,0,39),Size=UDim2.fromOffset(32,29),TextSize=17})
+local fontUp=button(fontCard,"+",{Position=UDim2.new(1,-62,0,39),Size=UDim2.fromOffset(36,29),TextSize=17})
+local function adjustFont(d)
+    fontSize=math.clamp(fontSize+d,11,19)
+    sizeIndicator.Text=tostring(fontSize).." px"
+    lastW,lastH=0,0;refreshCodeGeometry();scheduleSave()
+end
+fontDown.Activated:Connect(function()adjustFont(-1)end)
+fontUp.Activated:Connect(function()adjustFont(1)end)
+local syntaxCard=settingCard(3,"Syntax colours","Highlight keywords, numbers and comments",85)
+local syntaxToggle=button(syntaxCard,"",{Position=UDim2.new(1,-91,0,41),Size=UDim2.fromOffset(77,31)})
+local function refreshSyntax()
+    syntaxToggle.Text=syntaxEnabled and "ON" or "OFF"
+    syntaxToggle.TextColor3=syntaxEnabled and accent or P.muted
+    refreshCodeGeometry()
+end
+syntaxToggle.Activated:Connect(function() syntaxEnabled=not syntaxEnabled;refreshSyntax();scheduleSave() end)
+local animationCard=settingCard(4,"Animations","Smooth transitions and microinteractions",85)
+local animToggle=button(animationCard,"",{Position=UDim2.new(1,-91,0,41),Size=UDim2.fromOffset(77,31)})
+local function refreshAnimation()
+    animToggle.Text=animationsEnabled and "ON" or "OFF"
+    animToggle.TextColor3=animationsEnabled and accent or P.muted
+end
+animToggle.Activated:Connect(function()
+    animationsEnabled=not animationsEnabled;refreshAnimation();scheduleSave()
+end)
+local storageCard=settingCard(5,"Workspace storage","Tabs and saved scripts are stored when file APIs exist",90)
+local storageStatus=label(storageCard,type(writefile)=="function" and "PERSISTENCE AVAILABLE" or "SESSION ONLY — FILE API UNAVAILABLE",
+    10,type(writefile)=="function" and P.green or P.warn,true,
+    {Position=UDim2.fromOffset(13,59),Size=UDim2.new(1,-20,0,18)})
+refreshTheme=function()
+    for _,a in ipairs(accentItems) do
+        if a.obj and a.obj.Parent then
+            a.obj[a.prop]=accent
+            if a.obj==brandMark then
+                local g=brandMark:FindFirstChildOfClass("UIGradient")
+                if g then g.Color=ColorSequence.new(accent,accent:Lerp(Color3.new(0,0,0),.35)) end
+            end
+        end
+    end
+    for name,entry in pairs(navItems) do
+        entry.icon.TextColor3=name==activePage and accent or P.muted
+    end
+    for name,b in pairs(themes) do
+        b.BackgroundColor3=name==currentTheme and accent or P.raised
+        b.TextColor3=name==currentTheme and P.backdrop or P.muted
+    end
+    refreshSyntax();refreshAnimation();renderTabs()
+end
+
+-- Size the whole experience for narrow portrait phones and wide landscape screens.
+local viewportWidth, viewportHeight=740,480
+local function updateLayout()
+    Camera=workspace.CurrentCamera or Camera
+    local vp=Camera and Camera.ViewportSize or Vector2.new(900,600)
+    viewportWidth,viewportHeight=vp.X,vp.Y
+    local portrait=vp.Y>vp.X*1.1
+    local baseW=portrait and 426 or 808
+    local baseH=portrait and 666 or 470
+    local fit=math.min(1,(vp.X-22)/baseW,(vp.Y-28)/baseH)
+    fit=math.max(.38,fit)
+    dialogScale.Scale=math.clamp(math.min((vp.X-24)/330,(vp.Y-22)/208),.70,1)
+    main.Size=UDim2.fromOffset(baseW,baseH)
+    mainScale.Scale=fit
+    local available=baseW-66-24
+    local actions={runButton,saveButton,pasteButton,copyButton,clearButton}
+    local gap=6*4
+    local desired={109,65,65,65,65}
+    local sum=0
+    for _,w in ipairs(desired) do sum+=w end
+    local proportion=math.min(1,(available-gap)/sum)
+    for i,b in ipairs(actions) do
+        b.Size=UDim2.fromOffset(math.floor(desired[i]*proportion),41)
+    end
+    lastW,lastH=0,0
+    task.defer(refreshCodeGeometry)
+end
+updateLayout()
+if Camera then track(Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateLayout)) end
+track(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    Camera=workspace.CurrentCamera
+    updateLayout()
+    if Camera then track(Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateLayout)) end
+end))
+
+-- Touch + mouse dragging with viewport bounds and floating-toggle safeguards.
+local function connectDrag(handle,target,isLauncher)
+    local pressed,origin,startPos,moved=false,nil,nil,false
+    local suppressClick=false
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
+            pressed=true; origin=input.Position; startPos=target.Position; moved=false
+            local ended
+            ended=input.Changed:Connect(function()
+                if input.UserInputState==Enum.UserInputState.End then
+                    pressed=false
+                    if moved then
+                        suppressClick=true
+                        task.delay(.2,function() suppressClick=false end)
+                    end
+                    if ended then ended:Disconnect() end
+                end
+            end)
+        end
+    end)
+    track(UIS.InputChanged:Connect(function(input)
+        if not pressed then return end
+        if input.UserInputType~=Enum.UserInputType.MouseMovement and
+           input.UserInputType~=Enum.UserInputType.Touch then return end
+        local delta=input.Position-origin
+        if delta.Magnitude>7 then moved=true end
+        local vp=Camera and Camera.ViewportSize or Vector2.new(800,600)
+        local x=startPos.X.Scale*vp.X+startPos.X.Offset+delta.X
+        local y=startPos.Y.Scale*vp.Y+startPos.Y.Offset+delta.Y
+        local margin=isLauncher and 27 or 52
+        x=math.clamp(x,margin,math.max(margin,vp.X-margin))
+        y=math.clamp(y,margin,math.max(margin,vp.Y-margin))
+        if isLauncher then
+            target.Position=UDim2.fromOffset(x,y)
+        else
+            target.Position=UDim2.new(.5,x-vp.X*.5,.5,y-vp.Y*.5)
+        end
+    end))
+    return function() return suppressClick or moved end
+end
+connectDrag(top,main,false)
+local launcherDragged=connectDrag(orb,orb,true)
+local function toggleWindow(visible)
+    main.Visible=visible
+    backdrop.Visible=false
+    orb.Visible=not visible
+    if visible then updateLayout() end
+end
+minimize.Activated:Connect(function()toggleWindow(false)end)
+orb.Activated:Connect(function()
+    if not launcherDragged() then toggleWindow(true) end
 end)
 close.Activated:Connect(function()
-    if viewportConnection then viewportConnection:Disconnect() end
-    gui:Destroy()
+    saveWorkspace()
+    screen:Destroy()
 end)
 
--- TOUCH + MOUSE DRAG. Drag only from the header, not the code editor.
-local dragging = false
-local dragStart, windowStart, dragInput
-header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or
-       input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        windowStart = main.Position
-        dragInput = input
-    end
-end)
-header.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or
-       input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-track(UserInputService.InputChanged:Connect(function(input)
-    if not dragging then return end
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input == dragInput then
-        local delta = input.Position - dragStart
-        main.Position = UDim2.new(windowStart.X.Scale, windowStart.X.Offset + delta.X,
-            windowStart.Y.Scale, windowStart.Y.Offset + delta.Y)
-    end
-end))
-track(UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or
-       input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
+track(UIS.InputBegan:Connect(function(input,processed)
+    local control=UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl)
+    if not control then return end
+    if input.KeyCode==Enum.KeyCode.Return then executeCode(codeBox.Text)
+    elseif input.KeyCode==Enum.KeyCode.S then saveToLibrary()
+    elseif input.KeyCode==Enum.KeyCode.N then newTab() end
 end))
 
-for name, tab in pairs(tabs) do
-    tab.Activated:Connect(function() setPage(name) end)
-end
-setPage("Editor")
-appendLog("NOVA ready. Only execute code from sources you trust.", "success")
-if type(loadstring) ~= "function" then
-    appendLog("Script execution requires a loadstring-enabled environment.", "warn")
-end
-
--- Initial entrance animation.
-scale.Scale = targetScale * 0.93
-tween(scale, {Scale = targetScale}, 0.34)
+-- Startup
+updateEditor()
+renderLibrary()
+refreshTheme()
+showPage("Editor")
+addLog("INFO","Aether workspace initialized")
+addLog("INFO",type(loadstring)=="function" and "loadstring() available" or
+    "loadstring() unavailable; a native runcode backend may be needed")
+if type(writefile)~="function" then addLog("WARN","File APIs unavailable: library is session-only") end
+notify("Aether is ready")
