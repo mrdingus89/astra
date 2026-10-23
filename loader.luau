@@ -8,7 +8,7 @@ local CoreGui = game:GetService('CoreGui')
 
 local function C(r,g,b) return Color3.fromRGB(r,g,b) end
 local P = {
-    panel = C(38,38,38),       -- original Basalt proto_318 RGB
+    panel = C(38,38,38),     
     code = C(29,29,29),
     selected = C(54,54,54),
     accent = C(245,245,245),
